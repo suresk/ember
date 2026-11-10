@@ -31,8 +31,8 @@ const PIO2_3: f64 = f64::from_bits(0x3ba3_198a_2e03_7073);
 // IEEE rules on every host, so each is the correctly rounded f64.
 /// 1/n! for n = 0 to 13: the Taylor series of e^r.
 const EXP_SERIES: [f64; 14] = [
-    1.0 / 1.0,
-    1.0 / 1.0,
+    1.0,
+    1.0,
     1.0 / 2.0,
     1.0 / 6.0,
     1.0 / 24.0,
@@ -48,7 +48,7 @@ const EXP_SERIES: [f64; 14] = [
 ];
 /// 1/(2n + 1) for n = 0 to 12: the series of ln((1 + s) / (1 - s)) / 2s.
 const ODD_RECIPROCALS: [f64; 13] = [
-    1.0 / 1.0,
+    1.0,
     1.0 / 3.0,
     1.0 / 5.0,
     1.0 / 7.0,
@@ -64,7 +64,7 @@ const ODD_RECIPROCALS: [f64; 13] = [
 ];
 /// ±1/(2n + 1)! for n = 0 to 9: the Taylor series of sin r / r, in powers of r².
 const SIN_SERIES: [f64; 10] = [
-    1.0 / 1.0,
+    1.0,
     -1.0 / 6.0,
     1.0 / 120.0,
     -1.0 / 5040.0,
@@ -77,7 +77,7 @@ const SIN_SERIES: [f64; 10] = [
 ];
 /// ±1/(2n)! for n = 0 to 10: the Taylor series of cos r, in powers of r².
 const COS_SERIES: [f64; 11] = [
-    1.0 / 1.0,
+    1.0,
     -1.0 / 2.0,
     1.0 / 24.0,
     -1.0 / 720.0,
