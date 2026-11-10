@@ -4,9 +4,12 @@ ember is a small deep learning framework written in plain Rust, organized the wa
 strided tensors that share memory, broadcasting, a tape-based autograd engine, modules,
 optimizers and a training loop. It has no dependencies, runs on the CPU, and computes in `f32`.
 
-It is the code for the book *Build a Deep Learning Framework in Rust* by Spencer Uresk. The
-book builds ember one chapter at a time, and every listing in it is printed from this
-repository, so the code here is the code on the page.
+It is the code for the book
+[*Build a Deep Learning Framework in Rust*](https://uresk.net/workbooks/build-a-deep-learning-framework-in-rust)
+by Spencer Uresk. The book builds ember one chapter at a time, and every listing in it is
+printed from this repository, so the code here is the code on the page. The contents and
+Chapter 1 are a
+[free sample](https://uresk.net/workbooks/build-a-deep-learning-framework-in-rust-sample.pdf).
 
 ember is for learning. It trains a multilayer perceptron and a small CNN on MNIST and a tiny
 transformer on a toy task, and it is tested thoroughly, but it is not meant to compete with
