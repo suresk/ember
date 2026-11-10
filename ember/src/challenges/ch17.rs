@@ -1,5 +1,6 @@
 //! Chapter 17 challenges.
 
+use crate::math;
 use std::collections::HashMap;
 
 use crate::nn::{ParamId, Parameter};
@@ -116,7 +117,10 @@ impl Optimizer for AmsGrad {
     fn step(&mut self, params: &mut [&mut Parameter]) {
         let (b1, b2, eps) = (0.9f32, 0.999f32, 1e-8);
         self.buffers.step(params, |t, lr, w, g, [m, v, v_max]| {
-            let (c1, c2) = (1.0 - b1.powi(t as i32), 1.0 - b2.powi(t as i32));
+            let (c1, c2) = (
+                1.0 - math::powi(b1, t as i32),
+                1.0 - math::powi(b2, t as i32),
+            );
             *m = b1 * *m + (1.0 - b1) * g;
             *v = b2 * *v + (1.0 - b2) * g * g;
             *v_max = v_max.max(*v);

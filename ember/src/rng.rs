@@ -1,6 +1,7 @@
 //! Chapter 12: a seeded random number generator, so that every random tensor in ember
 //! (initial weights, shuffled batches, dropout masks) can be made again, bit for bit.
 
+use crate::math;
 use crate::tensor::Tensor;
 
 // @listing rng
@@ -51,8 +52,8 @@ impl Rng {
     pub fn normal(&mut self) -> f32 {
         let u1 = 1.0 - self.uniform_f64(); // in (0, 1], so ln(u1) is finite
         let u2 = self.uniform_f64();
-        let radius = (-2.0 * u1.ln()).sqrt();
-        (radius * (std::f64::consts::TAU * u2).cos()) as f32
+        let radius = (-2.0 * math::ln64(u1)).sqrt();
+        (radius * math::cos64(std::f64::consts::TAU * u2)) as f32
     }
 }
 

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::{Optimizer, ParamGroup, Stateful, update_each};
+use crate::math;
 use crate::nn::{ParamId, Parameter};
 use crate::tensor::Tensor;
 use crate::train::{CheckpointError, StateDict, StateReader};
@@ -114,7 +115,7 @@ impl Optimizer for Adam {
             let s = self.state.entry(p.id()).or_insert_with(new);
             s.step += 1;
             let t = s.step as i32;
-            let (c1, c2) = (1.0 - b1.powi(t), 1.0 - b2.powi(t)); // bias corrections
+            let (c1, c2) = (1.0 - math::powi(b1, t), 1.0 - math::powi(b2, t)); // bias corrections
             let (step_size, c2_sqrt) = (lr / c1, c2.sqrt());
             let l2 = if self.decoupled { 0.0 } else { wd }; // λ in the gradient
             let decay = lr * (wd - l2); // or lr·λ beside it

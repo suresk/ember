@@ -155,7 +155,9 @@ fn challenges(dir: &Path) -> Result<(), DataError> {
     };
     let relu = |v: f32| if v < 0.0 { 0.0 } else { v };
     row("relu", &|t| micros(|| ember::par_map(&x, relu, t)));
-    row("exp", &|t| micros(|| ember::par_map(&x, f32::exp, t)));
+    row("exp", &|t| {
+        micros(|| ember::par_map(&x, ember::math::exp, t))
+    });
     set_threads(1);
     for (k, m, n) in [(12_544, 72, 16), (50_176, 9, 8)] {
         let (a, g) = (Tensor::arange(&[k, m]), Tensor::arange(&[k, n]));

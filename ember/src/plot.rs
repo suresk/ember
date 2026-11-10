@@ -2,6 +2,7 @@
 //! the classes a model predicts over the plane. Chapter 18 adds a curve on a
 //! linear scale, for learning rates that start or end at zero.
 
+use crate::math;
 use crate::tensor::Tensor;
 
 // @listing curve
@@ -11,7 +12,7 @@ pub fn curve(values: &[f32], width: usize, height: usize) -> String {
     let n = values.len();
     let column = |j: usize| {
         let share = &values[j * n / width..(j + 1) * n / width];
-        (share.iter().sum::<f32>() / share.len() as f32).ln()
+        math::ln(share.iter().sum::<f32>() / share.len() as f32)
     };
     let logs: Vec<f32> = (0..width).map(column).collect();
     let span = |(t, b): (f32, f32), &y: &f32| (t.max(y), b.min(y));
@@ -26,8 +27,8 @@ pub fn curve(values: &[f32], width: usize, height: usize) -> String {
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate() {
         let label = match i {
-            0 => format!("{:>8.4}", top.exp()),
-            i if i == height - 1 => format!("{:>8.4}", bottom.exp()),
+            0 => format!("{:>8.4}", math::exp(top)),
+            i if i == height - 1 => format!("{:>8.4}", math::exp(bottom)),
             _ => " ".repeat(8),
         };
         out += &format!("{label} |{}\n", line.iter().collect::<String>());

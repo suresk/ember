@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**", deterministic-math]
   pull_request:
 
 jobs:
@@ -15,11 +15,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The tests assert trained losses to four decimals, and those digits depend on the
-  # platform's exp and tanh, so for now they run where the book's numbers were computed.
-  # The ci/matrix branch runs them on Linux and Windows as well (see the README).
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup show

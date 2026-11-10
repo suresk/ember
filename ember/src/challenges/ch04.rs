@@ -1,6 +1,7 @@
 //! Chapter 4 challenges.
 
 use crate::broadcast::broadcast_shapes;
+use crate::math;
 use crate::tensor::{Tensor, contiguous_strides};
 
 impl Tensor {
@@ -87,7 +88,7 @@ impl Tensor {
     /// `ln(1 + e^x)`, computed as `max(x, 0) + ln(1 + e^(-|x|))` so that e^x never
     /// overflows.
     pub fn softplus(&self) -> Tensor {
-        self.map(|x| x.max(0.0) + (-x.abs()).exp().ln_1p())
+        self.map(|x| x.max(0.0) + math::ln_1p(math::exp(-x.abs())))
     }
     // @end
 }

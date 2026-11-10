@@ -1,6 +1,7 @@
 //! Chapter 14 challenges.
 
 use crate::autograd::tape::{Tape, Var};
+use crate::math;
 use crate::nn::{Module, cross_entropy, mse_loss};
 use crate::rng::Rng;
 use crate::tensor::Tensor;
@@ -45,8 +46,8 @@ pub fn spirals_k(
     let mut point = |arm: usize| {
         let r = rng.uniform();
         let angle = TAU * turns * r + TAU * arm as f32 / classes as f32;
-        let x = r * angle.cos() + noise * rng.normal();
-        let y = r * angle.sin() + noise * rng.normal();
+        let x = r * math::cos(angle) + noise * rng.normal();
+        let y = r * math::sin(angle) + noise * rng.normal();
         [x, y]
     };
     let (mut data, mut labels) = (Vec::new(), Vec::new());
@@ -70,8 +71,8 @@ pub fn moons(per_class: usize, noise: f32, rng: &mut Rng) -> Labeled {
         for _ in 0..per_class {
             let t = PI * rng.uniform();
             let (x, y) = match class {
-                0 => (t.cos(), t.sin()),
-                _ => (1.0 - t.cos(), 0.5 - t.sin()),
+                0 => (math::cos(t), math::sin(t)),
+                _ => (1.0 - math::cos(t), 0.5 - math::sin(t)),
             };
             data.extend([x + noise * rng.normal(), y + noise * rng.normal()]);
             labels.push(class);
@@ -193,7 +194,7 @@ pub fn lr_range(
 ) -> Vec<(f32, f32)> {
     (0..steps)
         .map(|k| {
-            let lr = lo * (hi / lo).powf(k as f32 / (steps - 1) as f32);
+            let lr = lo * math::powf(hi / lo, k as f32 / (steps - 1) as f32);
             (lr, gd_step(model, x, lr, &loss))
         })
         .collect()

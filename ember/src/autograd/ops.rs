@@ -3,6 +3,7 @@
 //! the operators `+ - * /` on `Var` call them.
 
 use crate::autograd::tape::Var;
+use crate::math;
 use crate::tensor::Tensor;
 
 // Methods named like the `std::ops` traits, which the impls below call.
@@ -81,7 +82,7 @@ impl<'t> Var<'t> {
     // @listing powf
     /// `x^p` for a fixed exponent `p`, with derivative `p·x^(p-1)`.
     pub fn powf(self, p: f32) -> Var<'t> {
-        let d = move |g: f32, x: f32| g * p * x.powf(p - 1.0);
+        let d = move |g: f32, x: f32| g * p * math::powf(x, p - 1.0);
         self.unary("powf", move |x| x.powf(p), move |x, _, g| g.zip_map(x, d))
     }
     // @end
