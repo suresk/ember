@@ -3,6 +3,7 @@
 //! exponential is ever larger than 1.
 
 use crate::autograd::tape::Var;
+use crate::math;
 use crate::tensor::Tensor;
 
 // @listing lse-parts
@@ -13,8 +14,8 @@ fn lse_lane(lane: &[f32]) -> (f32, f32) {
     if !m.is_finite() {
         return (m, 0.0); // every element -∞ (ln 0), or one is +∞
     }
-    let s: f64 = lane.iter().map(|&x| (x - m).exp() as f64).sum();
-    (m, s.ln() as f32)
+    let s: f64 = lane.iter().map(|&x| math::exp(x - m) as f64).sum();
+    (m, math::ln64(s) as f32)
 }
 
 /// Each lane's `m` and `ln Σ e^(x - m)` along `dim`, with the axis kept (size 1).

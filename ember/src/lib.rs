@@ -9,6 +9,7 @@ pub mod autograd;
 mod broadcast;
 mod challenges;
 pub mod data;
+pub mod math;
 mod matmul;
 pub mod nn;
 mod ops;

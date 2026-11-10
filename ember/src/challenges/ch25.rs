@@ -2,6 +2,7 @@
 //! key-value cache for decoding, and rotary position embeddings.
 
 use crate::autograd::tape::{Tape, Var};
+use crate::math;
 use crate::nn::{Module, TinyTransformer, attention, causal_mask};
 use crate::rng::Rng;
 use crate::tensor::Tensor;
@@ -40,9 +41,13 @@ pub fn sinusoidal(context: usize, dim: usize) -> Tensor {
     let mut out = Vec::with_capacity(context * dim);
     for p in 0..context {
         for j in 0..dim {
-            let omega = 10000f64.powf(-((j / 2 * 2) as f64) / dim as f64);
+            let omega = math::powf64(10000.0, -((j / 2 * 2) as f64) / dim as f64);
             let angle = p as f64 * omega;
-            out.push(if j % 2 == 0 { angle.sin() } else { angle.cos() } as f32);
+            out.push(if j % 2 == 0 {
+                math::sin64(angle)
+            } else {
+                math::cos64(angle)
+            } as f32);
         }
     }
     Tensor::from_vec(out, &[context, dim])
@@ -147,10 +152,10 @@ pub fn rope(x: Var<'_>, base: f32) -> Var<'_> {
     let (mut cos, mut sin) = (vec![], vec![]);
     for p in 0..t {
         for j in 0..d {
-            let angle =
-                p as f64 * (base as f64).powf(-((j / 2 * 2) as f64) / d as f64);
-            cos.push(angle.cos() as f32);
-            sin.push(angle.sin() as f32);
+            let angle = p as f64
+                * math::powf64(base as f64, -((j / 2 * 2) as f64) / d as f64);
+            cos.push(math::cos64(angle) as f32);
+            sin.push(math::sin64(angle) as f32);
         }
     }
     let mut turn = vec![0.0; d * d]; // x·turn = [-x1, x0, -x3, x2, …]

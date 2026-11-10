@@ -2,6 +2,7 @@
 //! node on the heap that remembers the operation that made it, and `backward` walks
 //! the graph from the output to the leaves, applying the chain rule at each node.
 
+use crate::math;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
@@ -75,11 +76,11 @@ impl Value {
 
     // @listing functions
     pub fn tanh(&self) -> Value {
-        Value::from_op(self.data().tanh(), Op::Tanh(self.clone()))
+        Value::from_op(math::tanh(self.data()), Op::Tanh(self.clone()))
     }
 
     pub fn exp(&self) -> Value {
-        Value::from_op(self.data().exp(), Op::Exp(self.clone()))
+        Value::from_op(math::exp(self.data()), Op::Exp(self.clone()))
     }
 
     pub fn relu(&self) -> Value {
@@ -87,7 +88,7 @@ impl Value {
     }
 
     pub fn powf(&self, p: f32) -> Value {
-        Value::from_op(self.data().powf(p), Op::Powf(self.clone(), p))
+        Value::from_op(math::powf(self.data(), p), Op::Powf(self.clone(), p))
     }
     // @end
 
@@ -104,7 +105,7 @@ impl Value {
             Op::Tanh(a) => vec![(a.clone(), 1.0 - y * y)],
             Op::Exp(a) => vec![(a.clone(), y)],
             Op::Relu(a) => vec![(a.clone(), if y > 0.0 { 1.0 } else { 0.0 })],
-            Op::Powf(a, p) => vec![(a.clone(), p * a.data().powf(p - 1.0))],
+            Op::Powf(a, p) => vec![(a.clone(), p * math::powf(a.data(), p - 1.0))],
         }
     }
     // @end

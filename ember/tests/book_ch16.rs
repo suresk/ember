@@ -229,9 +229,9 @@ fn the_spirals_with_momentum() {
         let below = losses.iter().position(|&l| l < 0.01).map(|i| i + 1);
         (below, spirals::accuracy(&model, &small))
     };
-    assert_eq!(run(Sgd::new(2.0), 750), (Some(732), 1.0));
+    assert_eq!(run(Sgd::new(2.0), 1000), (Some(881), 1.0));
     assert_eq!(run(Sgd::new(0.5).momentum(0.9), 206), (Some(206), 1.0));
     let nesterov = Sgd::new(0.5).momentum(0.9).nesterov(true);
-    assert_eq!(run(nesterov, 237), (Some(237), 1.0));
+    assert_eq!(run(nesterov, 203), (Some(203), 1.0));
     // @end
 }

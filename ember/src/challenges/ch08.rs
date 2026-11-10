@@ -1,6 +1,7 @@
 //! Chapter 8 challenges.
 
 use crate::autograd::tape::{Tape, Var};
+use crate::math;
 use crate::tensor::Tensor;
 
 impl<'t> Var<'t> {
@@ -66,7 +67,7 @@ impl<'t> Var<'t> {
 fn gelu_parts(x: f32) -> (f32, f32) {
     const K: f32 = 0.797_884_6; // √(2/π)
     const C: f32 = 0.044_715;
-    let t = (K * (x + C * x * x * x)).tanh();
+    let t = math::tanh(K * (x + C * x * x * x));
     let du = K * (1.0 + 3.0 * C * x * x); // d/dx of the argument of tanh
     let y = 0.5 * x * (1.0 + t);
     let dy = 0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * du; // product rule

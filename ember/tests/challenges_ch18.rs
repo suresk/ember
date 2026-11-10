@@ -86,7 +86,7 @@ fn one_cycle() {
         spirals::train_with(&mut model, &small, &mut opt, &schedule, (100, f32::MAX));
     let below = losses.iter().position(|&l| l < 0.01).map(|i| i + 1);
     let worst = losses.iter().cloned().fold(0.0, f32::max);
-    assert_eq!((below, (worst * 1000.0).round()), (Some(53), 695.0));
+    assert_eq!((below, (worst * 1000.0).round()), (Some(52), 695.0));
     // @end
     assert!((losses[99] - 0.00194).abs() < 2e-5);
 }

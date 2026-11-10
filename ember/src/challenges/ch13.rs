@@ -1,6 +1,7 @@
 //! Chapter 13 challenges.
 
 use crate::autograd::tape::Var;
+use crate::math;
 use crate::nn::one_hot;
 use crate::tensor::Tensor;
 
@@ -86,7 +87,7 @@ pub fn bce_with_logits<'t>(logits: Var<'t>, targets: &Tensor) -> Var<'t> {
     let x = logits.value();
     assert_eq!(x.shape(), targets.shape(), "bce_with_logits: shapes");
     let n = x.numel() as f32;
-    let term = |x: f32, y: f32| x.max(0.0) - x * y + (-x.abs()).exp().ln_1p();
+    let term = |x: f32, y: f32| x.max(0.0) - x * y + math::ln_1p(math::exp(-x.abs()));
     let loss = x.zip_map(targets, term).sum_all() / n;
     let loss = Tensor::from_vec(vec![loss], &[]);
     let y = targets.clone();

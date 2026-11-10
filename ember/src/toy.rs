@@ -1,6 +1,7 @@
 //! Chapter 14: small datasets, made up on the spot, to train on before real data
 //! (Part V's `src/data/` loads files; these are generated).
 
+use crate::math;
 use crate::rng::Rng;
 use crate::tensor::Tensor;
 use std::f32::consts::{PI, TAU};
@@ -31,8 +32,8 @@ pub fn spirals(per_class: usize, turns: f32, noise: f32, rng: &mut Rng) -> Label
     let mut point = |arm: usize| {
         let r = rng.uniform();
         let angle = TAU * turns * r + PI * arm as f32;
-        let x = r * angle.cos() + noise * rng.normal();
-        let y = r * angle.sin() + noise * rng.normal();
+        let x = r * math::cos(angle) + noise * rng.normal();
+        let y = r * math::sin(angle) + noise * rng.normal();
         [x, y]
     };
     let (mut data, mut labels) = (Vec::with_capacity(4 * n), Vec::new());

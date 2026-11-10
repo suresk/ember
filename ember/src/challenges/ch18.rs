@@ -1,5 +1,6 @@
 //! Chapter 18 challenges.
 
+use crate::math;
 use std::f64::consts::PI;
 
 use crate::nn::Parameter;
@@ -51,7 +52,7 @@ impl LrScheduler for CosineRestarts {
         }
         let (base, min) = (base as f64, self.min_lr as f64);
         let done = t as f64 / len as f64;
-        (min + (base - min) * (1.0 + (PI * done).cos()) / 2.0) as f32
+        (min + (base - min) * (1.0 + math::cos64(PI * done)) / 2.0) as f32
     }
 }
 // @end
@@ -71,7 +72,7 @@ impl LrScheduler for OneCycle {
         let last = (self.steps - 1) as f64;
         let t = (step as f64).min(last);
         let anneal = |from: f64, to: f64, pct: f64| {
-            to + (from - to) * (1.0 + (PI * pct).cos()) / 2.0
+            to + (from - to) * (1.0 + math::cos64(PI * pct)) / 2.0
         };
         let lr = if t <= peak {
             anneal(start, base, t / peak)

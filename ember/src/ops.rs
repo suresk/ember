@@ -3,6 +3,7 @@
 //! tensors (`zip_map`); reductions combine the elements along one axis.
 
 use crate::broadcast::broadcast_shapes;
+use crate::math;
 use crate::tensor::Tensor;
 
 impl Tensor {
@@ -86,11 +87,11 @@ impl Tensor {
     }
 
     pub fn exp(&self) -> Tensor {
-        self.map(f32::exp)
+        self.map(math::exp)
     }
 
     pub fn powf(&self, p: f32) -> Tensor {
-        self.map(|x| x.powf(p))
+        self.map(|x| math::powf(x, p))
     }
     // @end
 
@@ -103,7 +104,7 @@ impl Tensor {
     }
 
     pub fn ln(&self) -> Tensor {
-        self.map(f32::ln)
+        self.map(math::ln)
     }
 
     pub fn sqrt(&self) -> Tensor {
@@ -111,7 +112,7 @@ impl Tensor {
     }
 
     pub fn tanh(&self) -> Tensor {
-        self.map(f32::tanh)
+        self.map(math::tanh)
     }
 
     // @listing activations
@@ -123,7 +124,7 @@ impl Tensor {
     /// `1 / (1 + e^(-x))`. For very negative x, `e^(-x)` overflows to infinity and
     /// the result is `1 / inf = 0`, which is the right answer to f32 precision.
     pub fn sigmoid(&self) -> Tensor {
-        self.map(|x| 1.0 / (1.0 + (-x).exp()))
+        self.map(|x| 1.0 / (1.0 + math::exp(-x)))
     }
     // @end
 }

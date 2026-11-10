@@ -63,7 +63,10 @@ fn allocations_per_update() {
     let list = allocations(|| drop(model.parameters()));
     // Chapter 24's is_contiguous makes no vector: 18 and 12 fewer allocations.
     assert_eq!(by_hand, (71 - 18, 3960 - 216)); // 2 · 354 · 4 bytes are buffers
-    assert_eq!(first, (19 - 12, 1276 - 144)); // the first fills the map
+    // The first step also fills the map. A HashMap's size depends on the CPU (its
+    // control bytes come in groups of 16 with SSE2 and 8 without), so count only.
+    assert_eq!(first.0, 19 - 12);
+    assert!(first.1 > later.1);
     assert_eq!(later, (17 - 12, 288 - 144));
     assert_eq!(list, (5, 144)); // model.parameters() alone
     // @end

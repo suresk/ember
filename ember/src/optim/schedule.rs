@@ -4,6 +4,7 @@
 use std::f64::consts::PI;
 
 use super::Optimizer;
+use crate::math;
 
 // @listing scheduler
 /// A learning rate that changes over training.
@@ -49,7 +50,7 @@ pub struct StepLr {
 impl LrScheduler for StepLr {
     fn lr(&self, base: f32, step: usize) -> f32 {
         let drops = (step / self.every) as i32; // whole periods so far
-        (base as f64 * (self.gamma as f64).powi(drops)) as f32
+        (base as f64 * math::powi64(self.gamma as f64, drops)) as f32
     }
 }
 // @end
@@ -66,7 +67,7 @@ impl LrScheduler for CosineLr {
     fn lr(&self, base: f32, step: usize) -> f32 {
         let done = step.min(self.steps) as f64 / self.steps as f64; // 0 to 1
         let (base, min) = (base as f64, self.min_lr as f64);
-        (min + (base - min) * (1.0 + (PI * done).cos()) / 2.0) as f32
+        (min + (base - min) * (1.0 + math::cos64(PI * done)) / 2.0) as f32
     }
 }
 // @end
