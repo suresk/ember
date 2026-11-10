@@ -1,0 +1,12 @@
+[package]
+name = "ember"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The deep learning framework you build in 'Build a Deep Learning Framework in Rust'."
+license = "MIT OR Apache-2.0"
+authors = ["Spencer Uresk"]
+repository = "https://github.com/suresk/ember"
+readme = "../README.md"
+
+[dependencies]
