@@ -36,6 +36,15 @@ $ cargo run --release --example mnist_cnn     # Chapter 22
 
 Use `--release` for anything that trains. A debug build is many times slower.
 
+**On Linux and Windows, a few tests fail.** The book's numbers were computed on macOS (Apple
+silicon), and the tests assert them exactly. Most of them are identical everywhere. The
+exceptions are the results of training runs: `exp`, `ln` and `tanh` come from the platform's
+math library, they can differ in the last bit from one platform to the next, and a few
+hundred training steps turn that bit into a different fourth decimal. About 10 of the 492
+tests fail on Linux for that reason, and about 19 on Windows; `cargo test --no-fail-fast`
+shows them. The code is correct on every platform, and the networks train just as well. Making
+these tests platform-independent is in progress.
+
 ## Following the book
 
 The repository is a Cargo workspace with two crates. `ember/` is the library. `xtask/` holds
