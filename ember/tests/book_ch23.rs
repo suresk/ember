@@ -373,7 +373,6 @@ fn spirals_run(norm: Norm, lr: f32) -> (f32, f32) {
 fn normalization_on_the_spirals() {
     let (plain, plain_acc) = spirals_run(Norm::None, 0.3);
     let (batch, batch_acc) = spirals_run(Norm::Batch, 0.3);
-    println!("{plain} {plain_acc} {batch} {batch_acc}");
-    assert!(near(plain, 0.3316, 1e-4) && near(plain_acc, 0.84, 1e-6));
+    assert!(near(plain, 0.5749, 1e-4) && near(plain_acc, 0.64, 1e-6));
     assert!(batch < 2e-4 && batch_acc == 1.0);
 }

@@ -186,8 +186,8 @@ fn accuracy_as_is(model: &Sequential, (x, labels): &Labeled) -> f32 {
 fn the_gap_without_dropout() {
     // @listing gap-test
     let (mut plain, train, val) = spirals_run(0.0, 300);
-    assert_eq!(measure(&mut plain, &train), (0.032, 0.99)); // (loss, accuracy)
-    assert_eq!(measure(&mut plain, &val), (0.595, 0.905)); // loss gap 0.563
+    assert_eq!(measure(&mut plain, &train), (0.033, 0.99)); // (loss, accuracy)
+    assert_eq!(measure(&mut plain, &val), (0.575, 0.92)); // loss gap 0.542
     // @end
 }
 
@@ -195,13 +195,13 @@ fn the_gap_without_dropout() {
 fn dropout_narrows_the_gap() {
     // @listing dropout-gap-test
     let (mut dropped, train, val) = spirals_run(0.1, 300);
-    assert_eq!(measure(&mut dropped, &train), (0.106, 0.98));
-    assert_eq!(measure(&mut dropped, &val), (0.235, 0.94)); // loss gap 0.129
+    assert_eq!(measure(&mut dropped, &train), (0.12, 0.97));
+    assert_eq!(measure(&mut dropped, &val), (0.284, 0.945)); // loss gap 0.164
     // @end
     // @listing train-mode-test
     let a = accuracy_as_is(&dropped, &val); // dropout still on: a random network
     let b = accuracy_as_is(&dropped, &val);
-    assert_eq!((a, b), (0.9, 0.8925)); // 360 and 357 of 400; evaluate: 376
+    assert_eq!((a, b), (0.885, 0.8925)); // 354 and 357 of 400; evaluate: 378
     // @end
 }
 

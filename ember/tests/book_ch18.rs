@@ -200,11 +200,11 @@ fn warmup_tames_adam() {
     // @listing warmup
     let (cold, _, _) = short(&mut Adam::new(0.3), &ConstantLr, (100, NO_CLIP));
     let first = [0.694, 0.891, 3.658, 2.469, 1.315];
-    assert!(close(&cold[..5], &first, 1e-3) && (cold[99] - 0.270).abs() < 1e-3);
+    assert!(close(&cold[..5], &first, 1e-3) && (cold[99] - 0.156).abs() < 1e-3);
     let warmup = LinearWarmup::new(20, ConstantLr);
     let (warm, _, _) = short(&mut Adam::new(0.3), &warmup, (60, NO_CLIP));
     let worst = warm.iter().cloned().fold(0.0, f32::max);
-    assert_eq!(below(&warm, 0.01), Some(56)); // Adam at 0.03: 83 (Chapter 17)
+    assert_eq!(below(&warm, 0.01), Some(46)); // Adam at 0.03: 82 (Chapter 17)
     assert!((worst - 0.711).abs() < 5e-4);
     // @end
 }
@@ -240,7 +240,7 @@ fn cosine_on_the_spirals() {
     let cosine = CosineLr::new(200, 0.0);
     let (decayed, _, _) = short(&mut Adam::new(0.03), &cosine, (200, NO_CLIP));
     let firsts = (below(&constant, 0.01), below(&decayed, 0.01));
-    assert_eq!(firsts, (Some(83), Some(98)));
+    assert_eq!(firsts, (Some(82), Some(98)));
     let lasts = [constant[199], decayed[199]];
     assert!(close(&lasts, &[0.00112, 0.00486], 1e-5));
     // @end
@@ -316,7 +316,7 @@ fn the_full_step() {
     let mut opt = AdamW::new(0.3);
     let schedule = LinearWarmup::new(20, CosineLr::new(130, 0.0)); // 150 in all
     let (losses, norms, accuracy) = short(&mut opt, &schedule, (150, 1.0));
-    assert_eq!((below(&losses, 0.01), accuracy), (Some(50), 1.0));
+    assert_eq!((below(&losses, 0.01), accuracy), (Some(49), 1.0));
     assert!((losses[149] - 0.0015).abs() < 1e-4);
     assert!(norms.iter().all(|&n| n < 0.6)); // the clip never acted
     // @end

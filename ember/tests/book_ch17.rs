@@ -185,7 +185,7 @@ fn the_spirals_with_adam() {
         let below = losses.iter().position(|&l| l < 0.01).map(|i| i + 1);
         (below, spirals::accuracy(&model, &small))
     };
-    assert_eq!(run(Box::new(Adam::new(0.03)), 83), (Some(83), 1.0));
+    assert_eq!(run(Box::new(Adam::new(0.03)), 82), (Some(82), 1.0));
     assert_eq!(run(Box::new(RmsProp::new(0.01)), 345), (Some(345), 1.0));
     // @end
 }

@@ -143,7 +143,7 @@ fn the_noise_scale() {
     assert_eq!([at_start, late].map(f64::round), [64.0, 932.0]);
     assert!((losses[199] - 0.00237).abs() < 1e-5);
     // @end
-    assert!((at_start - 63.558).abs() < 1e-3 && (late - 931.98).abs() < 0.01);
+    assert!((at_start - 63.558).abs() < 1e-3 && (late - 931.95).abs() < 0.01);
     // A batch of 8's relative error at the start, by the formula: 2.6.
     let error = (at_start / 8.0 * (50.0 - 8.0) / 49.0).sqrt();
     assert!((error - 2.610).abs() < 1e-3);

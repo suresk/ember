@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "ci/**", deterministic-math]
+    branches: [main, "ci/**"]
   pull_request:
 
 jobs:

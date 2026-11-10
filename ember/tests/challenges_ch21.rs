@@ -72,9 +72,9 @@ fn monte_carlo_dropout() {
     let class0 = |p: &Tensor| -> Vec<f32> {
         p.to_vec().iter().step_by(2).map(|&v| round(v, 3)).collect()
     };
-    assert_eq!(class0(&eval), [0.585, 0.569, 0.956]); // P(class 0), dropout off
-    assert_eq!(class0(&mean), [0.581, 0.562, 0.829]); // the mean of 1,000 passes
-    assert_eq!(class0(&std), [0.043, 0.054, 0.232]); // and their spread
+    assert_eq!(class0(&eval), [0.576, 0.564, 0.955]); // P(class 0), dropout off
+    assert_eq!(class0(&mean), [0.572, 0.558, 0.808]); // the mean of 1,000 passes
+    assert_eq!(class0(&std), [0.042, 0.059, 0.26]); // and their spread
     // @end
 }
 

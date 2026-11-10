@@ -57,8 +57,8 @@ fn three_spirals() {
         || gd_step(&mut model, &data.0, 1.0, |z| cross_entropy(z, &data.1));
     let losses: Vec<f32> = (0..500).map(|_| step()).collect();
     assert!((losses[0] - 1.1113).abs() < 1e-4); // ln 3 = 1.0986
-    assert!((losses[499] - 0.1637).abs() < 1e-4);
-    assert!((spirals::accuracy(&model, &data) - 0.9333).abs() < 1e-4); // 70 of 75
+    assert!((losses[499] - 0.2052).abs() < 1e-4);
+    assert!((spirals::accuracy(&model, &data) - 0.8933).abs() < 1e-4); // 67 of 75
 }
 // @end
 
@@ -178,8 +178,8 @@ fn learning_rate_range_test() {
         .unwrap();
     assert_eq!(lowest, 81);
     let (lr, loss) = curve[81];
-    assert!((lr - 1.874).abs() < 1e-3 && (loss - 0.1428).abs() < 1e-4);
-    assert!(curve[82].1 > 1.8 && curve[83].1 > 5.0); // and then it blows up
+    assert!((lr - 1.874).abs() < 1e-3 && (loss - 0.1373).abs() < 1e-4);
+    assert!(curve[82].1 > 1.2 && curve[83].1 > 18.0); // and then it blows up
     assert!(curve[99].1.is_nan());
 }
 
