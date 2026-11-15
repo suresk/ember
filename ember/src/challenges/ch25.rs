@@ -9,8 +9,13 @@ use crate::tensor::Tensor;
 
 // @listing probabilities
 /// The next token's probabilities from one row of logits `[vocab]`: the `k`
-/// largest kept (the rest set to −∞ by `masked_fill`), divided by `temperature`.
+/// largest kept (the rest set to −∞ by `masked_fill`; a tie with the `k`-th
+/// largest is kept too), divided by `temperature`, which must be above 0.
 pub fn probabilities(logits: &Tensor, temperature: f32, k: usize) -> Tensor {
+    assert!(
+        k >= 1 && temperature > 0.0,
+        "probabilities: k {k}, T {temperature}"
+    );
     let mut sorted = logits.to_vec();
     sorted.sort_by(|a, b| b.total_cmp(a)); // largest first
     let kth = sorted[k.min(sorted.len()) - 1];
@@ -62,6 +67,7 @@ pub fn padding_mask(lengths: &[usize], t: usize, left: bool) -> Tensor {
     let future = causal_mask(t).to_vec();
     let mut out = Vec::with_capacity(lengths.len() * t * t);
     for &len in lengths {
+        assert!(len <= t, "padding_mask: a length of {len}, {t} positions");
         let pad = |j: usize| if left { j < t - len } else { j >= len };
         for (k, &f) in future.iter().enumerate() {
             out.push(if f != 0.0 || pad(k % t) { 1.0 } else { 0.0 });
@@ -129,15 +135,17 @@ impl KvCache {
 /// `n` tokens after the prompt `ids`, each the most likely one, one position
 /// per step through a cache: Section 25.8's `greedy` without recomputing.
 pub fn generate_cached(m: &TinyTransformer, ids: &[usize], n: usize) -> Vec<usize> {
+    assert!(!ids.is_empty(), "generate_cached: an empty prompt");
     let (mut cache, mut out) = (KvCache::default(), vec![]);
     let mut logits = Tensor::zeros(&[1]);
     for (p, &id) in ids.iter().enumerate() {
         logits = cache.step(m, id, p); // the prompt
     }
     for p in ids.len()..ids.len() + n {
-        out.push(logits.argmax(0)[0]);
+        let next = logits.argmax(0)[0];
+        out.push(next);
         if out.len() < n {
-            logits = cache.step(m, out[out.len() - 1], p);
+            logits = cache.step(m, next, p);
         }
     }
     out

@@ -3,7 +3,7 @@
 
 use ember::{
     Kernel, Tensor, matmul_blocked, matmul_blocked_with, matmul_ikj, matmul_naive,
-    matmul_nt_kernel, matmul_parallel,
+    matmul_nt_kernel, matmul_parallel, set_threads,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 /// The fastest of `runs` calls to `f`, after one call to warm up. The fastest run
 /// is the one least disturbed by everything else the machine was doing.
 fn best_of(runs: usize, mut f: impl FnMut()) -> Duration {
+    assert!(runs > 0, "best_of: no runs");
     f();
     let mut best = Duration::MAX;
     for _ in 0..runs {
@@ -30,7 +31,7 @@ fn data(len: usize, seed: usize) -> Vec<f32> {
 }
 
 // @listing bench-matmul
-const KERNELS: [(&str, Kernel); 3] = [
+const KERNELS: &[(&str, Kernel)] = &[
     ("naive", matmul_naive),
     ("ikj", matmul_ikj),
     ("blocked", matmul_blocked),
@@ -43,10 +44,10 @@ pub fn matmul(sizes: &[usize]) {
         let (a, b) = (data(n * n, 1), data(n * n, 2));
         let mut c = vec![0.0; n * n];
         let flops = 2.0 * (n as f64).powi(3);
-        for (name, kernel) in KERNELS {
+        for &(name, kernel) in KERNELS {
             let t = best_of(3, || {
                 c.fill(0.0); // kernels add into c
-                kernel(black_box(&a), black_box(&b), &mut c, (n, n, n));
+                kernel(black_box(&a), black_box(&b), black_box(&mut c), (n, n, n));
             });
             let (ms, gflops) = (t.as_secs_f64() * 1e3, flops / t.as_secs_f64() / 1e9);
             println!("{n:>5}  {name:<8} {ms:>9.2} {gflops:>8.2}");
@@ -59,6 +60,9 @@ pub fn matmul(sizes: &[usize]) {
 /// `x + y` and `x.matmul(y)` for 1024 × 1024 tensors held three ways: contiguous,
 /// rows with a gap after each, and transposed.
 pub fn layout() {
+    // @hide
+    set_threads(1); // Chapter 24's threads would change the matmul column
+    // @show
     let n = 1024;
     let t = |seed, cols| Tensor::from_vec(data(n * cols, seed), &[n, cols]);
     let gapped = |seed| t(seed, n + 1).slice(1, 0, n, 1);
@@ -87,11 +91,13 @@ pub fn panel(n: usize) {
     let mut c = vec![0.0; n * n];
     let flops = 2.0 * (n as f64).powi(3);
     println!("{:>5}  {:>6} {:>9} {:>8}", "n", "panel", "ms", "GFLOP/s");
-    let panels = (4..).map(|e| 1 << e).take_while(|&p| p < n).chain([n]);
+    let powers = (4..usize::BITS).map(|e| 1usize << e); // 16, 32, 64, …
+    let panels = powers.take_while(|&p| p < n).chain([n]);
     for panel in panels {
         let t = best_of(3, || {
             c.fill(0.0);
-            matmul_blocked_with(black_box(&a), &b, &mut c, (n, n, n), panel);
+            let c = black_box(&mut c);
+            matmul_blocked_with(black_box(&a), black_box(&b), c, (n, n, n), panel);
         });
         let (ms, gflops) = (t.as_secs_f64() * 1e3, flops / t.as_secs_f64() / 1e9);
         println!("{n:>5}  {panel:>6} {ms:>9.2} {gflops:>8.2}");
@@ -100,8 +106,15 @@ pub fn panel(n: usize) {
 // @end
 
 // @listing bench-nt
-/// Challenge 5.4: `x @ y.T` for n × n matrices, three ways.
+/// Challenge 5.4: `x @ y.T` for n × n matrices, by copying the transpose and with
+/// the nt kernel.
+// @hide
+/// Challenge 5.7 adds a third way, through strides.
+// @show
 pub fn nt(n: usize) {
+    // @hide
+    set_threads(1); // Chapter 24's threads would change the copy + blocked row
+    // @show
     let (a, b) = (data(n * n, 1), data(n * n, 2));
     let x = Tensor::from_vec(a.clone(), &[n, n]);
     let yt = Tensor::from_vec(b.clone(), &[n, n]).transpose(0, 1); // a view
@@ -112,12 +125,14 @@ pub fn nt(n: usize) {
     };
     let copy = best_of(3, || drop(black_box(x.matmul(&yt))));
     show("copy + blocked", copy);
+    // @hide
     let strided = best_of(3, || drop(black_box(x.matmul_strided(&yt))));
     show("strided", strided);
+    // @show
     let mut c = vec![0.0; n * n];
     let nt = || {
         c.fill(0.0);
-        matmul_nt_kernel(black_box(&a), black_box(&b), &mut c, (n, n, n));
+        matmul_nt_kernel(black_box(&a), black_box(&b), black_box(&mut c), (n, n, n));
     };
     show("nt kernel", best_of(3, nt));
 }
@@ -134,6 +149,14 @@ pub fn threads(n: usize) {
         ("[12544,72]x[72,16]", (12_544, 72, 16)),
         ("n x n", (n, n, n)),
     ];
+    // Half a second of work first, so the first row isn't timed while the core
+    // is still raising its clock.
+    let (a, b) = (data(64 * 784, 1), data(784 * 128, 2));
+    let mut c = vec![0.0; 64 * 128];
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(500) {
+        matmul_parallel(black_box(&a), black_box(&b), &mut c, (64, 784, 128), 1);
+    }
     let max = std::thread::available_parallelism().map_or(1, |n| n.get());
     let few = [1, 2, 4, 6, 8, 12, 16, 24, 32]
         .into_iter()
@@ -148,8 +171,9 @@ pub fn threads(n: usize) {
         let mut one = 0.0;
         print!("{name:<20}");
         for &t in &counts {
+            // `c` collects the sum of every run: refilling it with zeros would add
+            // a pass over `c` to each time, and only the time is wanted here.
             let time = best_of(20, || {
-                c.fill(0.0);
                 matmul_parallel(black_box(&a), black_box(&b), &mut c, (m, k, p), t);
             });
             let ms = time.as_secs_f64() * 1e3;

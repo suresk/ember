@@ -36,6 +36,7 @@ pub trait Dataset {
             if shape.len() == 1 {
                 shape.extend(x.shape()); // the first example sets the shape
             }
+            assert_eq!(x.shape(), &shape[1..], "get_batch: example {i}'s shape");
             data.extend(x.to_vec());
             labels.push(y);
         }
@@ -55,8 +56,12 @@ pub struct TensorDataset {
 
 impl TensorDataset {
     pub fn new(x: Tensor, labels: Vec<usize>) -> TensorDataset {
-        let (rows, n) = (x.shape().first().copied().unwrap_or(0), labels.len());
-        assert!(rows == n, "TensorDataset: {rows} rows but {n} labels");
+        assert!(
+            !x.shape().is_empty(),
+            "TensorDataset: x has no axis of examples"
+        );
+        let (rows, n) = (x.shape()[0], labels.len());
+        assert_eq!(rows, n, "TensorDataset: {rows} rows but {n} labels");
         let x = x.contiguous();
         TensorDataset { x, labels }
     }
@@ -81,7 +86,7 @@ impl Dataset for TensorDataset {
     /// One copy per row, straight from the buffer into the batch.
     fn get_batch(&self, indices: &[usize]) -> (Tensor, Vec<usize>) {
         let all = self.x.as_slice().expect("contiguous, made so by `new`");
-        let row = self.x.numel() / self.len().max(1);
+        let row: usize = self.x.shape()[1..].iter().product(); // numbers per example
         let mut data = Vec::with_capacity(indices.len() * row);
         for &i in indices {
             data.extend_from_slice(&all[i * row..(i + 1) * row]);

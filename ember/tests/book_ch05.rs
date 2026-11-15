@@ -23,7 +23,7 @@ fn counting_flops() {
     assert_eq!(flops(512, 512, 512), 268_435_456);
     assert_eq!(flops(64, 784, 128), 12_845_056); // a batch through a layer
     assert_eq!(64 * 128, 8192); // the bias adds on its output
-    // Doubling n multiplies the work by 8.
+    // Doubling every size multiplies the work by 8.
     assert_eq!(flops(1024, 1024, 1024), 8 * flops(512, 512, 512));
     // @end
 }
@@ -112,6 +112,9 @@ fn empty_products() {
 #[test]
 fn the_inner_loops_read() {
     // @listing inner-loops
+    // A 128-byte cache line holds 32 f32s; a row of 512 fills 16 lines.
+    let per_line = 128 / size_of::<f32>();
+    assert_eq!((per_line, 512 / per_line), (32, 16));
     let b = Tensor::arange(&[3, 4]);
     let column = b.select(1, 1); // what ijk's inner loop reads from b
     assert_eq!((column.strides(), column.offset()), (&[4][..], 1));
@@ -144,14 +147,19 @@ fn the_kernels_agree_exactly() {
     // spans two panels.
     let (m, k, n) = (7, 300, 10);
     let (a, b) = (fractions(m * k, 1), fractions(k * n, 2));
-    let run = |kernel: Kernel| {
-        let mut c = vec![0.0; m * n];
+    let run = |kernel: Kernel, c0: &[f32]| {
+        let mut c = c0.to_vec();
         kernel(&a, &b, &mut c, (m, k, n));
         c
     };
-    let want = run(matmul_naive);
-    assert_eq!(run(matmul_ikj), want); // equal to the last bit
-    assert_eq!(run(matmul_blocked), want);
+    let zero = vec![0.0; m * n];
+    let want = run(matmul_naive, &zero);
+    assert_eq!(run(matmul_ikj, &zero), want); // equal to the last bit
+    assert_eq!(run(matmul_blocked, &zero), want);
+    // On a c that isn't zero, naive adds c[ij] last and the others first.
+    let c0 = fractions(m * n, 3);
+    assert_ne!(run(matmul_naive, &c0), run(matmul_ikj, &c0));
+    assert_eq!(run(matmul_blocked, &c0), run(matmul_ikj, &c0));
     // Close to, but not exactly, the same products summed in f64.
     let exact = |ij: usize| -> f64 {
         let (i, j) = (ij / n, ij % n);
@@ -166,16 +174,15 @@ fn the_kernels_agree_exactly() {
 
 #[test]
 fn what_a_tile_saves() {
-    // A 128-byte cache line holds 32 f32s; a row of 512 fills 16 lines.
-    let per_line = 128 / size_of::<f32>();
-    assert_eq!((per_line, 512 / per_line), (32, 16));
     // @listing tile-traffic
     // One step of p for a 4 × 8 tile: 32 multiply-adds, and memory operations.
     let fmas = TILE_M * TILE_N;
     let (ikj, tile) = (3 * fmas, TILE_M + TILE_N); // ikj: load b, load c, store c
     assert_eq!((fmas, ikj, tile, ikj / tile), (32, 96, 12, 8));
-    // A panel of a 2048-wide b in bytes; one strip's cache lines with and
-    // without panels.
+    // @end
+    // @listing panel-sizes
+    // A panel of a 2048-wide b in MiB; one strip's 128-byte lines in KiB, with
+    // and without panels.
     let mib = PANEL * 2048 * 4 / 1024 / 1024;
     let kib = (PANEL * 128 / 1024, 2048 * 128 / 1024);
     assert_eq!((mib, kib), (2, (32, 256)));
@@ -185,7 +192,7 @@ fn what_a_tile_saves() {
 #[test]
 fn layouts_for_add() {
     // @listing add-layouts
-    // The three layouts of `cargo xtask bench add`, at n = 4 instead of 1024.
+    // The three layouts of `cargo xtask bench layout`, at n = 4, not 1024.
     let n = 4;
     let gapped = Tensor::arange(&[n, n + 1]).slice(1, 0, n, 1);
     assert_eq!((gapped.strides(), gapped.as_slice()), (&[5, 1][..], None));

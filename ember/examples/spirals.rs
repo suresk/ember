@@ -10,8 +10,8 @@
 
 use ember::{
     Adam, AdamW, ConstantLr, CosineLr, Linear, LinearWarmup, LrScheduler, Module,
-    Optimizer, RmsProp, Rng, Sequential, Sgd, Tanh, Tape, Tensor, base_lrs,
-    clip_grad_norm, cross_entropy, plot, toy, toy::Labeled,
+    Optimizer, ParamGroup, RmsProp, Rng, Sequential, Sgd, Tanh, Tape, Tensor,
+    base_lrs, clip_grad_norm, cross_entropy, plot, toy, toy::Labeled,
 };
 use std::time::{Duration, Instant};
 
@@ -49,7 +49,7 @@ pub fn step(model: &mut impl Module, (x, labels): &Labeled, lr: f32) -> f32 {
         loss.value().item()
     };
     for p in model.parameters() {
-        let g = p.grad.as_ref().expect("a gradient");
+        let g = p.grad.as_ref().expect("every parameter is on the tape");
         p.value = p.value.sub(&g.mul_scalar(lr));
     }
     loss
@@ -79,7 +79,8 @@ pub fn step_with(
 // @listing train-with
 /// Chapter 18's training loop: before update t, the schedule sets every group's
 /// learning rate; after the backward pass, the gradient is clipped to
-/// `max_norm`. Returns every loss and every gradient norm before clipping.
+/// `max_norm`; a step whose norm is not finite is skipped. Returns every loss and
+/// every gradient norm before clipping.
 pub fn train_with(
     model: &mut impl Module,
     (x, labels): &Labeled,
@@ -98,9 +99,12 @@ pub fn train_with(
             loss.backward_into(&mut model.parameters());
             loss.value().item()
         };
-        norms.push(clip_grad_norm(&mut model.parameters(), max_norm)); // 3. clip
-        opt.step(&mut model.parameters()); // 4. update, in place
+        let norm = clip_grad_norm(&mut model.parameters(), max_norm); // 3. clip
+        if norm.is_finite() {
+            opt.step(&mut model.parameters()); // 4. update, unless it overflowed
+        }
         losses.push(loss);
+        norms.push(norm);
     }
     (losses, norms)
 }
@@ -120,27 +124,41 @@ pub fn accuracy(model: &impl Module, (x, labels): &Labeled) -> f32 {
     let right = predicted.iter().zip(labels).filter(|(p, l)| p == l).count();
     right as f32 / labels.len() as f32
 }
+
+/// The cross-entropy of `model` on `data`, with nothing recorded for a backward.
+pub fn loss(model: &impl Module, (x, labels): &Labeled) -> f32 {
+    let tape = Tape::new();
+    let logits = tape.no_grad(|| model.forward(tape.constant(x.clone())));
+    cross_entropy(logits, labels).value().item()
+}
 // @end
 
-/// `steps` steps; prints a line every `every` steps, and returns every loss.
+// @listing train
+/// `steps` steps; returns every loss. Every `every` steps (and after step 1) it
+/// prints the loss before that step, then the training accuracy, the held-out
+/// accuracy and the held-out loss after it. `every = 0` prints nothing.
 pub fn train(
     model: &mut impl Module,
-    data: &(Labeled, Labeled),
+    (train, held_out): &(Labeled, Labeled),
     lr: f32,
     steps: usize,
     every: usize,
 ) -> Vec<f32> {
-    let (train, held_out) = data;
     let mut losses = Vec::with_capacity(steps);
     for i in 1..=steps {
         losses.push(step(model, train, lr));
         if every > 0 && (i == 1 || i % every == 0) {
             let (a, b) = (accuracy(model, train), accuracy(model, held_out));
-            println!("{i:>6} {:>8.4} {a:>8.3} {b:>8.3}", losses[i - 1]);
+            let held_loss = loss(model, held_out);
+            println!(
+                "{i:>6} {:>8.4} {a:>8.3} {b:>8.3} {held_loss:>9.4}",
+                losses[i - 1]
+            );
         }
     }
     losses
 }
+// @end
 
 /// One step, timed in three parts: forward and loss, backward, update.
 fn timed_step(
@@ -163,6 +181,8 @@ fn timed_step(
     [t1 - t0, t2 - t1, t2.elapsed()]
 }
 
+/// Widths 4, 16 and 64, each from seed 14: parameters, last loss, accuracies and
+/// the time per step.
 fn widths() {
     println!(
         "{:>6} {:>7} {:>8} {:>8} {:>8} {:>10}",
@@ -228,7 +248,8 @@ fn time() {
     println!("{:>16} {:>8.1?}", "forward biases", start.elapsed() / 1000);
 }
 
-/// 10,000 steps with weight decay 0, 1e-4, 1e-3 and 1e-2 on every parameter.
+/// 10,000 steps with weight decay 0, 1e-4, 1e-3 and 1e-2 on the weight matrices,
+/// and none on the biases (Section 15.7's two groups).
 fn decay() {
     println!(
         "{:>8} {:>8} {:>8} {:>8} {:>8}",
@@ -238,7 +259,17 @@ fn decay() {
         let mut rng = Rng::new(14);
         let data = data(&mut rng);
         let mut model = mlp(16, &mut rng);
-        let mut opt = Sgd::new(1.0).weight_decay(wd);
+        let biases = model
+            .parameters()
+            .into_iter()
+            .filter(|p| p.value.ndim() < 2);
+        let ids = biases.map(|p| p.id()).collect();
+        let no_decay = ParamGroup {
+            ids,
+            lr: 1.0,
+            weight_decay: 0.0,
+        };
+        let mut opt = Sgd::new(1.0).weight_decay(wd).group(no_decay);
         let mut loss = 0.0;
         for _ in 0..10_000 {
             loss = step_with(&mut model, &data.0, &mut opt);
@@ -283,6 +314,7 @@ fn header() {
     );
 }
 
+// @listing report
 /// Train Section 14.6's model for 10,000 steps with `opt` and print one line.
 fn report(name: &str, opt: &mut dyn Optimizer) {
     let mut rng = Rng::new(14);
@@ -300,7 +332,9 @@ fn report(name: &str, opt: &mut dyn Optimizer) {
     let (b05, b01) = (below(0.05), below(0.01));
     println!("{name:>8} {lr:>6} {b05:>6} {b01:>6} {last:>8.4} {a:>6.3} {b:>6.3}");
 }
+// @end
 
+// @listing adaptive
 /// Chapter 17: RMSProp, Adam and AdamW beside SGD, over a sweep of learning rates.
 fn adaptive() {
     header();
@@ -318,6 +352,7 @@ fn adaptive() {
         report("adamw", &mut AdamW::new(lr));
     }
 }
+// @end
 
 /// Chapter 18: 10,000 steps of `opt` under `schedule`, clipped to `max_norm`;
 /// prints the first step below 0.01, the last loss, the largest loss of the
@@ -360,20 +395,27 @@ fn schedules() {
     report_with("mom. cosine", &mut Sgd::new(1.0).momentum(0.9), &cosine);
 }
 
+// @listing main
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        // @hide
         Some("schedule") => return schedules(),
         Some("momentum") => return momentum(),
         Some("adam") => return adaptive(),
-        Some("widths") => return widths(),
         Some("decay") => return decay(),
+        // @show
+        Some("widths") => return widths(),
         Some("time") => return time(),
         _ => {}
     }
     let mut rng = Rng::new(14);
     let data = data(&mut rng);
     let mut model = mlp(16, &mut rng);
-    println!("{:>6} {:>8} {:>8} {:>8}", "step", "loss", "train", "held");
+    let head = ["step", "loss", "train", "held", "held loss"];
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>9}",
+        head[0], head[1], head[2], head[3], head[4]
+    );
     let start = Instant::now();
     let losses = train(&mut model, &data, 1.0, 10_000, 1000);
     println!("{:.2?} per step", start.elapsed() / 10_000);
@@ -382,3 +424,4 @@ fn main() {
     let classify = |grid: &Tensor| predict(&model, grid);
     print!("{}", plot::regions(classify, 1.1, (64, 24), (x, labels)));
 }
+// @end

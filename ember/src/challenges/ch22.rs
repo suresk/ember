@@ -2,7 +2,8 @@
 
 use crate::autograd::tape::Var;
 use crate::challenges::ChannelDropout;
-use crate::nn::{Dropout, Linear, Module, Parameter, Sequential, Window};
+use crate::nn::{Dropout, Linear, Module, Parameter, Sequential, Window, four};
+use crate::tensor::Tensor;
 
 // @listing pointwise
 /// A `Linear` layer applied at every pixel of `x`, `[N, C, H, W]`: the channels
@@ -28,10 +29,10 @@ pub struct GlobalAvgPool;
 
 impl Module for AvgPool2d {
     fn forward<'t>(&self, x: Var<'t>) -> Var<'t> {
-        let (s, win) = (x.shape(), self.window);
-        let planes = x.reshape(&[s[0] * s[1], 1, s[2], s[3]]);
+        let ([n, c, h, w], win) = (four(&x.shape(), "AvgPool2d"), self.window);
+        let planes = x.reshape(&[n * c, 1, h, w]);
         let y = planes.im2col(win).mean(1, false); // the gradient: 1/k² each
-        y.reshape(&[s[0], s[1], win.out(s[2]), win.out(s[3])])
+        y.reshape(&[n, c, win.out(h), win.out(w)])
     }
     fn parameters(&mut self) -> Vec<&mut Parameter> {
         Vec::new()
@@ -40,8 +41,8 @@ impl Module for AvgPool2d {
 
 impl Module for GlobalAvgPool {
     fn forward<'t>(&self, x: Var<'t>) -> Var<'t> {
-        let s = x.shape();
-        x.reshape(&[s[0], s[1], s[2] * s[3]]).mean(2, false)
+        let [n, c, h, w] = four(&x.shape(), "GlobalAvgPool");
+        x.reshape(&[n, c, h * w]).mean(2, false)
     }
     fn parameters(&mut self) -> Vec<&mut Parameter> {
         Vec::new()
@@ -92,7 +93,7 @@ pub fn with_channel_dropout(
 /// Depthwise convolution: channel `c` of `x`, `[N, C, H, W]`, convolved with
 /// its own k × k kernel, row `c` of `weight`, `[C, k·k]`, and nothing else.
 pub fn depthwise_conv2d<'t>(x: Var<'t>, weight: Var<'t>, win: Window) -> Var<'t> {
-    let [n, c, h, w] = <[usize; 4]>::try_from(x.shape()).expect("[N, C, H, W]");
+    let [n, c, h, w] = four(&x.shape(), "depthwise_conv2d");
     let (ho, wo, kk) = (win.out(h), win.out(w), win.size * win.size);
     let fields = x.reshape(&[n * c, 1, h, w]).im2col(win); // [N·C·Ho·Wo, k·k]
     let fields = fields.reshape(&[n, c, ho * wo, kk]);
@@ -105,7 +106,7 @@ pub fn depthwise_conv2d<'t>(x: Var<'t>, weight: Var<'t>, win: Window) -> Var<'t>
 impl<'t> Var<'t> {
     /// `col2im` on the tape, for an image of `shape`; its backward is `im2col`.
     pub fn col2im(self, shape: &[usize], win: Window) -> Var<'t> {
-        let f = |m: &crate::Tensor| m.col2im(shape, win);
+        let f = |m: &Tensor| m.col2im(shape, win);
         self.unary("col2im", f, move |_, _, g| g.im2col(win))
     }
 }
@@ -114,9 +115,14 @@ impl<'t> Var<'t> {
 /// `[C, C_out·k·k]`, is a k × k patch of `C_out` channels, and the patches are
 /// added into the output where they overlap: the adjoint of `conv2d`.
 pub fn conv_transpose2d<'t>(x: Var<'t>, weight: Var<'t>, win: Window) -> Var<'t> {
-    let [n, c, h, w] = <[usize; 4]>::try_from(x.shape()).expect("[N, C, H, W]");
+    let [n, c, h, w] = four(&x.shape(), "conv_transpose2d");
     let c_out = weight.shape()[1] / (win.size * win.size);
-    let size = |n: usize| (n - 1) * win.stride + win.size - 2 * win.padding;
+    let size = |n: usize| {
+        let span = n.checked_sub(1).map(|steps| steps * win.stride + win.size);
+        let cut = span.and_then(|span| span.checked_sub(2 * win.padding));
+        cut.filter(|&size| size > 0)
+            .expect("conv_transpose2d: padding too large")
+    };
     let rows = x.permute(&[0, 2, 3, 1]).reshape(&[n * h * w, c]);
     let patches = rows.matmul(weight); // [N·H·W, C_out·k·k]
     patches.col2im(&[n, c_out, size(h), size(w)], win)

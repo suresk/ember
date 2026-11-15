@@ -2,11 +2,16 @@
 //! its own (a separate test binary, like Chapters 7, 15, 19 and 20's, so no
 //! other test is counted).
 use ember::{
-    AdamW, Linear, Module, ReLU, Rng, Sequential, Tensor, contiguous_strides,
-    set_threads, train_step,
+    AdamW, Dataset, Linear, Module, Optimizer, ReLU, Rng, Sequential, Sgd, Tape,
+    Tensor, TensorDataset, contiguous_strides, cross_entropy, set_threads, toy,
+    train_step,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+
+#[path = "../examples/spirals.rs"]
+#[allow(dead_code)]
+mod spirals;
 
 struct Counting;
 
@@ -69,4 +74,41 @@ fn allocations_per_step() {
     let product = allocations(|| g.matmul(&w.transpose(0, 1))).1;
     assert_eq!(product, (128 * 784 + 64 * 784) * 4 + 240);
     // @end
+}
+
+/// Section 24.8's table: the counts of Section 7.8, Answer 15.5 and Section 19.2
+/// with this chapter's `is_contiguous`, measured as those tests measure them.
+#[test]
+fn earlier_counts_now() {
+    set_threads(1);
+    let tape_sum = allocations(|| {
+        let tape = Tape::new();
+        tape.leaf(Tensor::arange(&[1000])).sum_all().backward();
+    });
+    assert_eq!(tape_sum.0, 17); // Section 7.8: 18 before
+    let mut rng = Rng::new(14); // Answer 15.5's spirals and width-16 MLP
+    let (x, labels) = toy::spirals(25, 1.5, 0.05, &mut rng);
+    let mut model = spirals::mlp(16, &mut rng);
+    let grads = |m: &mut dyn Module| {
+        m.zero_grad();
+        let tape = Tape::new();
+        let loss = cross_entropy(m.forward(tape.constant(x.clone())), &labels);
+        loss.backward_into(&mut m.parameters());
+    };
+    grads(&mut model);
+    let by_hand = allocations(|| {
+        for p in model.parameters() {
+            let g = p.grad.as_ref().unwrap();
+            p.value = p.value.sub(&g.mul_scalar(0.1));
+        }
+    });
+    assert_eq!(by_hand, (53, 3744)); // (71, 3960) before
+    let mut opt = Sgd::new(0.1);
+    opt.step(&mut model.parameters());
+    grads(&mut model);
+    let later = allocations(|| opt.step(&mut model.parameters()));
+    assert_eq!(later, (5, 144)); // (17, 288) before
+    let ds = TensorDataset::new(Tensor::zeros(&[1000, 784]), vec![0; 1000]);
+    let indices: Vec<usize> = (0..64).map(|i| i * 15).collect();
+    assert_eq!(allocations(|| ds.get_batch(&indices)).0, 6); // Section 19.2: 7
 }

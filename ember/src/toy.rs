@@ -13,12 +13,9 @@ pub type Labeled = (Tensor, Vec<usize>);
 /// The four points of XOR as rows of `[4, 2]`, and their targets as `[4, 1]`: 1
 /// when exactly one input is 1.
 pub fn xor() -> (Tensor, Tensor) {
-    let x = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0];
-    let y = [0.0, 1.0, 1.0, 0.0];
-    (
-        Tensor::from_vec(x.to_vec(), &[4, 2]),
-        Tensor::from_vec(y.to_vec(), &[4, 1]),
-    )
+    let x = vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0];
+    let y = vec![0.0, 1.0, 1.0, 0.0];
+    (Tensor::from_vec(x, &[4, 2]), Tensor::from_vec(y, &[4, 1]))
 }
 // @end
 
@@ -36,7 +33,8 @@ pub fn spirals(per_class: usize, turns: f32, noise: f32, rng: &mut Rng) -> Label
         let y = r * math::sin(angle) + noise * rng.normal();
         [x, y]
     };
-    let (mut data, mut labels) = (Vec::with_capacity(4 * n), Vec::new());
+    let (mut data, mut labels) =
+        (Vec::with_capacity(4 * n), Vec::with_capacity(2 * n));
     for arm in 0..2 {
         for _ in 0..n {
             data.extend(point(arm));

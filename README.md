@@ -50,7 +50,7 @@ The repository is a Cargo workspace with two crates. `ember/` is the library. `x
 the benchmarks and a command that runs one chapter's tests:
 
 ```text
-$ cargo xtask check 7              # Chapter 7's tests: what passes, what fails, what isn't written
+$ cargo xtask check 7              # Chapter 7's examples, and each of its challenges
 $ cargo xtask bench matmul 512     # Chapter 5's timings (always in a release build)
 ```
 
@@ -60,6 +60,40 @@ Each chapter has two test files in `ember/tests/`:
   assertion there.
 - `challenges_chNN.rs` checks the end-of-chapter challenges. The solutions are in
   `ember/src/challenges/chNN.rs`, so don't open that directory until you have tried them.
+
+The book's appendix of worked solutions, with the reasoning behind each one, is
+[`solutions.pdf`](solutions.pdf). It's online rather than in the printed book so the paperback
+can stay in color.
+
+## Checking your own code
+
+If you are writing ember yourself as you read, the same command runs these tests against your
+code. Chapter 1 has you make a workspace, `ember-workspace`, with the crate in
+`ember-workspace/ember`. Clone this repository next to it under another name, so the two
+aren't confused, and point the command at your workspace:
+
+```text
+$ git clone https://github.com/suresk/ember ember-reference
+$ cd ember-reference
+$ cargo xtask check 3 --crate ../ember-workspace      # Chapter 3: its examples and every challenge
+$ cargo xtask check 3.4 --crate ../ember-workspace    # Challenge 3.4 alone, with the full output
+```
+
+```text
+Chapter 3
+  Examples          passed (11 tests)
+  Challenge 3.1     passed (1 test)
+  Challenge 3.2     FAILED (1 of 1 test)
+      ✗ broadcast_all_folds_the_rule
+        assertion `left == right` failed   left: None  right: Some([2, 3, 4])
+  Challenge 3.3     not started (no `outer`)
+```
+
+Each challenge is compiled on its own, so the ones you haven't written don't get in the way
+of the ones you have. Nothing is written into your workspace: the tests are copied to
+`target/check` here and built against your crate. `--crate` takes either a workspace with the
+crate in `ember/`, or the crate's own directory, and your package can have any name. To leave
+`--crate` out, set it once: `export EMBER_CRATE=../ember-workspace`.
 
 This is where each chapter's code lives:
 
@@ -124,4 +158,5 @@ code, changes that reshape a listing have to wait for the next printing.
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT), at your option. The license covers the code in this repository.
-The text of the book is not part of it.
+The text of the book is not part of it, and neither is `solutions.pdf`, which is part of the
+book: © 2026 Spencer Uresk, all rights reserved.

@@ -1,7 +1,7 @@
 //! The examples printed in Chapter 7 of the guided edition: a tape of tensor
 //! operations.
 use ember::autograd::scalar::Value;
-use ember::{Tape, Tensor, Var};
+use ember::{Gradients, Tape, Tensor, Var};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -10,7 +10,8 @@ fn scalar(x: f32) -> Tensor {
     Tensor::from_vec(vec![x], &[])
 }
 
-fn grad(grads: &ember::Gradients, v: Var) -> Vec<f32> {
+/// The gradient of `v`, read out as a `Vec`.
+fn grad(grads: &Gradients, v: Var) -> Vec<f32> {
     grads.get(v).expect("a gradient").to_vec()
 }
 
@@ -140,6 +141,25 @@ fn two_tapes_dont_mix() {
 }
 
 #[test]
+#[should_panic(expected = "Gradients::get: a Var of another tape")]
+fn gradients_belong_to_one_tape() {
+    let (t1, t2) = (Tape::new(), Tape::new());
+    let a = t1.leaf(scalar(5.0));
+    let grads = a.mul(a).sum_all().backward();
+    let stranger = t2.leaf(scalar(1.0)); // id 0, like a
+    grads.get(stranger);
+}
+
+#[test]
+#[should_panic(expected = "backward: the output requires no gradient")]
+fn backward_of_a_prediction() {
+    let tape = Tape::new();
+    let w = tape.leaf(scalar(2.0));
+    let y = tape.no_grad(|| w.mul(w).sum_all());
+    y.backward(); // every gradient would be missing: say so instead
+}
+
+#[test]
 fn recording_off() {
     // @listing no-grad-example
     let tape = Tape::new();
@@ -190,16 +210,22 @@ fn what_a_handle_costs() {
 struct Counting;
 
 thread_local! {
+    // `const`: no lazy initialization and no destructor, so reading it never
+    // allocates, even while the thread is exiting.
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
+// SAFETY: every call is forwarded unchanged to `System`, which meets the
+// `GlobalAlloc` contract; counting touches no memory the allocator hands out.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.set(ALLOCATIONS.get() + 1);
+        // SAFETY: our caller's guarantees about `layout` are `System`'s.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from `alloc` above, which got it from `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -232,6 +258,19 @@ fn allocations_for_a_sum() {
         })
     };
     assert_eq!(scalar_engine, 4_022); // about 4 per number
-    assert_eq!((tape_sum(1000), tape_sum(1_000_000)), (17, 17)); // 18 until Ch. 24
+    // @hide
+    let tape_sum = |n| tape_sum(n) + usize::from(!is_contiguous_allocates());
+    // @show
+    assert_eq!((tape_sum(1000), tape_sum(1_000_000)), (18, 18));
     // @end
+}
+
+/// Whether `is_contiguous` allocates, as Chapter 2's does: it builds the
+/// row-major strides in a vector to compare with. Chapter 24's builds nothing,
+/// and this file's hidden lines add back what that saves, so that the test
+/// asserts this chapter's count before Chapter 24 and after it. Chapter 24's own
+/// test, `earlier_counts_now`, asserts the new counts.
+fn is_contiguous_allocates() -> bool {
+    let x = Tensor::zeros(&[2, 3]);
+    allocations(|| assert!(x.is_contiguous())) > 0
 }

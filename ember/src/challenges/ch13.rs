@@ -10,8 +10,13 @@ use crate::tensor::Tensor;
 /// is `-onehot / N`: a gradient only where a target was read.
 pub fn nll_loss<'t>(log_probs: Var<'t>, targets: &[usize]) -> Var<'t> {
     let lp = log_probs.value();
-    let (n, classes) = (targets.len(), lp.shape()[1]);
-    assert_eq!(lp.shape()[0], n, "nll_loss: {n} targets");
+    let (shape, n) = (lp.shape(), targets.len());
+    let fits = shape.len() == 2 && shape[0] == n;
+    assert!(fits, "nll_loss: log_probs {shape:?}, {n} targets");
+    let classes = shape[1];
+    for &c in targets {
+        assert!(c < classes, "nll_loss: target {c}, {classes} classes");
+    }
     let picked = targets.iter().enumerate();
     let sum: f64 = picked.map(|(i, &c)| lp.get(&[i, c]) as f64).sum();
     let loss = Tensor::from_vec(vec![(-sum / n as f64) as f32], &[]);
@@ -43,7 +48,7 @@ pub fn cross_entropy_smoothed<'t>(
         vec![p.sub(&q).mul_scalar(g.item() / n as f32)]
     };
     let tape = logits.tape();
-    tape.push("cross_entropy", loss, vec![logits.id()], rule)
+    tape.push("cross_entropy_smoothed", loss, vec![logits.id()], rule)
 }
 // @end
 
@@ -57,13 +62,13 @@ pub fn cross_entropy_masked<'t>(
     let z = logits.value();
     let (rows, classes) = (z.shape()[0], z.shape()[1]);
     assert_eq!(targets.len(), rows, "cross_entropy_masked: targets");
-    let kept: Vec<(usize, usize)> = (0..rows)
-        .filter_map(|i| targets[i].map(|c| (i, c)))
-        .collect();
+    let rows_kept = targets.iter().enumerate();
+    let kept: Vec<(usize, usize)> =
+        rows_kept.filter_map(|(i, t)| t.map(|c| (i, c))).collect();
     let n = kept.len() as f32; // 0 if every row is ignored: the loss is NaN
     let log_p = z.log_softmax(1);
-    let sum: f32 = kept.iter().map(|&(i, c)| log_p.get(&[i, c])).sum();
-    let loss = Tensor::from_vec(vec![-sum / n], &[]);
+    let sum: f64 = kept.iter().map(|&(i, c)| log_p.get(&[i, c]) as f64).sum();
+    let loss = Tensor::from_vec(vec![(-sum / n as f64) as f32], &[]);
     let (mut onehot, mut mask) = (vec![0.0; rows * classes], vec![0.0; rows]);
     for &(i, c) in &kept {
         onehot[i * classes + c] = 1.0;
@@ -76,7 +81,7 @@ pub fn cross_entropy_masked<'t>(
         vec![diff.mul_scalar(g.item() / n)]
     };
     let tape = logits.tape();
-    tape.push("cross_entropy", loss, vec![logits.id()], rule)
+    tape.push("cross_entropy_masked", loss, vec![logits.id()], rule)
 }
 // @end
 
@@ -107,9 +112,24 @@ pub fn softmax_t(logits: &Tensor, temp: f32) -> Tensor {
 }
 // @end
 
+// @listing accuracy
+/// The fraction of rows of `logits`, `[N, C]`, whose largest entry is at the
+/// row's label.
+// @hide
+#[allow(dead_code)] // the crate root exports Chapter 20's version instead
+// @show
+pub fn accuracy(logits: &Tensor, labels: &[usize]) -> f32 {
+    let predicted = logits.argmax(1); // a class per row, as usize
+    let right = predicted.iter().zip(labels).filter(|(p, l)| p == l).count();
+    right as f32 / labels.len() as f32
+}
+// @end
+
 // @listing jacobian
 /// The full `[C, C]` Jacobian of the softmax of a vector: `diag(p) - p pᵀ`.
 pub fn softmax_jacobian(x: &Tensor) -> Tensor {
+    let axes = x.ndim();
+    assert!(axes == 1, "softmax_jacobian: {axes} axes, not a vector");
     let c = x.numel();
     let p = x.softmax(0);
     let column = p.reshape(&[c, 1]);
@@ -119,5 +139,35 @@ pub fn softmax_jacobian(x: &Tensor) -> Tensor {
         diag[i * c + i] = pi;
     }
     Tensor::from_vec(diag, &[c, c]).sub(&outer)
+}
+// @end
+
+// @listing lean
+/// `cross_entropy` with a rule that keeps the targets instead of a one-hot matrix,
+/// and subtracts 1 at the `N` target entries of `p`.
+pub fn cross_entropy_lean<'t>(logits: Var<'t>, targets: &[usize]) -> Var<'t> {
+    let z = logits.value();
+    let (shape, n) = (z.shape(), targets.len());
+    let fits = shape.len() == 2 && shape[0] == n;
+    assert!(fits, "cross_entropy_lean: logits {shape:?}, {n} targets");
+    let classes = shape[1];
+    let below = targets.iter().all(|&c| c < classes);
+    assert!(below, "cross_entropy_lean: a target of {classes} or more");
+    let log_p = z.log_softmax(1);
+    let picked = targets.iter().enumerate();
+    let sum: f64 = picked.map(|(i, &c)| log_p.get(&[i, c]) as f64).sum();
+    let loss = Tensor::from_vec(vec![(-sum / n as f64) as f32], &[]);
+    let targets = targets.to_vec(); // N indices, not N × C numbers
+    let rule = move |g: &Tensor| {
+        let scale = g.item() / n as f32;
+        let mut d: Vec<f32> = log_p.to_vec().into_iter().map(math::exp).collect();
+        for (row, &c) in targets.iter().enumerate() {
+            d[row * classes + c] -= 1.0; // p - onehot, one row at a time
+        }
+        d.iter_mut().for_each(|x| *x *= scale);
+        vec![Tensor::from_vec(d, &[n, classes])]
+    };
+    let tape = logits.tape();
+    tape.push("cross_entropy_lean", loss, vec![logits.id()], rule)
 }
 // @end

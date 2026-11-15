@@ -32,7 +32,7 @@ fn profiling_a_step() {
     let backward = backward.map(|op| p.calls("backward", op));
     assert_eq!(backward, [1, 3, 2, 2, 1]); // 9 rules
     assert_eq!(p.calls("step", "optimizer"), 1);
-    assert_eq!(p.total(None), p.rows.iter().map(|r| r.3).sum());
+    assert_eq!(p.total(None), p.rows.iter().map(|r| r.time).sum());
     // @end
     mark("step", "nothing"); // no profile running: does nothing
     assert_eq!(p.calls("backward", "param"), 0); // leaves have no rule to mark
@@ -47,14 +47,14 @@ fn amdahl(p: f64, s: f64) -> f64 {
 #[test]
 fn amdahls_law() {
     let r = |x: f64| (x * 100.0).round() / 100.0;
-    let mlp = 869.8 / 1151.6; // matmul's share, Section 24.2's table
-    let cnn = 3803.0 / 10297.0;
-    assert_eq!((r(mlp), r(cnn)), (0.76, 0.37));
-    assert_eq!(r(amdahl(mlp, f64::INFINITY)), 4.09);
-    assert_eq!(r(amdahl(mlp, 6.0)), 2.70);
-    assert_eq!(r(amdahl(mlp, 2.0)), 1.61);
-    assert_eq!(r(amdahl(cnn, f64::INFINITY)), 1.59);
-    assert_eq!(r(amdahl(cnn, 6.0)), 1.44);
+    let mlp = (233.2 + 671.0) / 1178.9; // the products' share, Section 24.2
+    let cnn = (721.3 + 3060.6) / 10858.8;
+    assert_eq!((r(mlp), r(cnn)), (0.77, 0.35));
+    assert_eq!(r(amdahl(mlp, f64::INFINITY)), 4.29);
+    assert_eq!(r(amdahl(mlp, 6.0)), 2.77);
+    assert_eq!(r(amdahl(mlp, 2.0)), 1.62);
+    assert_eq!(r(amdahl(cnn, f64::INFINITY)), 1.53);
+    assert_eq!(r(amdahl(cnn, 6.0)), 1.41);
 }
 
 #[test]
@@ -104,6 +104,8 @@ fn how_many_threads() {
     set_threads(4);
     assert_eq!((threads(), threads_for((64, 784, 128))), (4, 4));
     // @end
+    // The limit is global, so the other tests in this binary may run on 4 or 18
+    // threads, or on the default; each of them gives the same bits for any count.
 }
 
 /// Chapter 2's test: compare with the row-major strides, size-1 axes aside.

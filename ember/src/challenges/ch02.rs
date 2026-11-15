@@ -26,6 +26,7 @@ impl Tensor {
 
     /// Drop axis `dim`, which must have size 1.
     pub fn squeeze(&self, dim: usize) -> Tensor {
+        assert!(dim < self.ndim(), "squeeze: axis {dim} of {}", self.ndim());
         assert_eq!(
             self.shape[dim], 1,
             "squeeze: axis {dim} has size {}",
@@ -60,6 +61,7 @@ impl Tensor {
     // @listing chunk
     /// Split axis `dim` into pieces of `ceil(len / n)`; the last may be shorter.
     pub fn chunk(&self, dim: usize, n: usize) -> Vec<Tensor> {
+        assert!(dim < self.ndim(), "chunk: axis {dim} of {}", self.ndim());
         assert!(n >= 1, "chunk: n must be at least 1");
         let len = self.shape[dim];
         let size = len.div_ceil(n).max(1);
@@ -117,4 +119,29 @@ impl Tensor {
         (v == 0).then(|| make(strides))
     }
     // @end
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tensor::Tensor;
+
+    // An axis that doesn't exist panics with the operation's name, not with a bare
+    // "index out of bounds" from inside the method.
+    #[test]
+    #[should_panic(expected = "squeeze: axis 2 of 2")]
+    fn squeeze_names_a_missing_axis() {
+        Tensor::arange(&[2, 1]).squeeze(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk: axis 2 of 2")]
+    fn chunk_names_a_missing_axis() {
+        Tensor::arange(&[2, 3]).chunk(2, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "unfold: axis 1 of 1")]
+    fn unfold_names_a_missing_axis() {
+        Tensor::arange(&[6]).unfold(1, 2, 1);
+    }
 }

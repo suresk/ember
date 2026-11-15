@@ -1,14 +1,22 @@
 //! The examples printed in Chapter 16 of the guided edition: momentum and Nesterov.
+// @listing imports
 use ember::{Optimizer, Parameter, Rng, Sgd, Tensor, plot, toy};
 
 #[path = "../examples/spirals.rs"]
 #[allow(dead_code)]
 mod spirals;
 
+const VALLEY: [f32; 2] = [1.0, 100.0];
+// @end
+
+// @listing close
+/// True when `xs` and `want` have the same length and agree to within `tol`.
 fn close(xs: &[f32], want: &[f32], tol: f32) -> bool {
     xs.len() == want.len() && xs.iter().zip(want).all(|(a, b)| (a - b).abs() <= tol)
 }
+// @end
 
+// @listing bowl-step
 /// One step of `opt` on f(w) = ½w², whose gradient is w itself. Returns the
 /// velocity `opt` holds for `w` afterward, or 0 if it holds none.
 fn bowl_step(w: &mut Parameter, opt: &mut Sgd) -> f32 {
@@ -17,6 +25,7 @@ fn bowl_step(w: &mut Parameter, opt: &mut Sgd) -> f32 {
     let state = opt.state(w.id()).unwrap();
     state.momentum_buffer.as_ref().map_or(0.0, |v| v.item())
 }
+// @end
 
 #[test]
 fn momentum_by_hand() {
@@ -59,6 +68,39 @@ fn nesterov_by_hand() {
     let want = [0.81, 0.5751, 0.327321, 0.093888, -0.104582];
     assert!(close(&ws, &want, 1e-6));
     // @end
+    // It overshoots too, less far: its lowest point is -0.394, at step 8.
+    for _ in 5..15 {
+        bowl_step(&mut w, &mut nesterov);
+        ws.push(w.value.item());
+    }
+    let low = (0..ws.len())
+        .min_by(|&i, &j| ws[i].total_cmp(&ws[j]))
+        .unwrap();
+    assert_eq!(low + 1, 8);
+    assert!((ws[low] + 0.39399).abs() < 1e-4);
+}
+
+#[test]
+fn the_builder_order_is_free() {
+    // @listing builder-order
+    let early = Sgd::new(0.1).momentum(0.9).nesterov(true);
+    let late = Sgd::new(0.1).nesterov(true).momentum(0.9);
+    let run = |mut opt: Sgd| bowl(&[1.0], &[1.0], &mut opt, 5);
+    assert_eq!(run(early), run(late));
+    // @end
+}
+
+#[test]
+#[should_panic(expected = "Sgd: Nesterov needs zero dampening")]
+fn nesterov_with_dampening_panics() {
+    let mut opt = Sgd::new(0.1).momentum(0.9).nesterov(true).dampening(0.5);
+    bowl(&[1.0], &[1.0], &mut opt, 1);
+}
+
+#[test]
+#[should_panic(expected = "Sgd: momentum must be at least 0")]
+fn negative_momentum_panics() {
+    let _ = Sgd::new(0.1).momentum(-0.5);
 }
 
 #[test]
@@ -114,8 +156,6 @@ fn losses(path: &Path) -> Vec<f32> {
     path.iter().map(|(_, l)| *l).collect()
 }
 
-const VALLEY: [f32; 2] = [1.0, 100.0];
-
 #[test]
 fn plain_sgd_in_a_valley() {
     // @listing valley
@@ -141,7 +181,7 @@ fn plain_sgd_in_a_valley() {
 fn momentum_in_a_valley() {
     // @listing valley-momentum
     let settle =
-        |opt: Sgd| settles(&bowl(&VALLEY, &[1.0, 1.0], &mut { opt }, 3000), 1e-6);
+        |mut opt: Sgd| settles(&bowl(&VALLEY, &[1.0, 1.0], &mut opt, 3000), 1e-6);
     let momentum = |lr| Sgd::new(lr).momentum(0.9);
     let nesterov = |lr| Sgd::new(lr).momentum(0.9).nesterov(true);
     assert_eq!(settle(Sgd::new(0.008)), Some(817));
@@ -199,7 +239,7 @@ const FIGURE: &str = r"
 #[test]
 fn stability_limits() {
     // @listing limits
-    let last = |opt: Sgd| bowl(&[1.0], &[1.0], &mut { opt }, 500)[499].1;
+    let last = |mut opt: Sgd| bowl(&[1.0], &[1.0], &mut opt, 500)[499].1;
     let momentum = |lr| Sgd::new(lr).momentum(0.9);
     let nesterov = |lr| Sgd::new(lr).momentum(0.9).nesterov(true);
     assert!(last(Sgd::new(1.9)) < 1e-6 && last(Sgd::new(2.1)).is_infinite());
@@ -207,7 +247,7 @@ fn stability_limits() {
     assert!(last(nesterov(1.3)) < 1e-6 && last(nesterov(1.4)) > 1e37);
     // @end
     // After 50 steps at lr 0.1 on the round bowl: momentum is far behind.
-    let at50 = |opt: Sgd| bowl(&[1.0], &[1.0], &mut { opt }, 50)[49].1;
+    let at50 = |mut opt: Sgd| bowl(&[1.0], &[1.0], &mut opt, 50)[49].1;
     let l = [
         at50(Sgd::new(0.1)),
         at50(momentum(0.1)),

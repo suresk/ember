@@ -1,29 +1,31 @@
 //! Chapter 20: the bytes a tape holds during evaluation, with and without
 //! `no_grad`, counted by a global allocator of its own (a separate test binary,
-//! like Chapter 7's and 19's, so no other test is counted).
+//! like Chapter 7's and 19's, so no other test is counted). The count is one
+//! for the whole process, not one per thread: from Chapter 24 on, a matrix
+//! product's threads free memory that this thread allocated (the closures they
+//! run), and a per-thread count would never see it come back.
 use ember::{Linear, Module, ReLU, Rng, Sequential, Tape, Tensor, cross_entropy};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
 
 struct Counting;
 
-thread_local! {
-    static LIVE: Cell<isize> = const { Cell::new(0) };
-}
+/// The bytes allocated and not yet freed, by any thread.
+static LIVE: AtomicIsize = AtomicIsize::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.set(LIVE.get() + layout.size() as isize);
+        LIVE.fetch_add(layout.size() as isize, Relaxed);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        LIVE.set(LIVE.get() + size as isize - layout.size() as isize);
+        LIVE.fetch_add(size as isize - layout.size() as isize, Relaxed);
         unsafe { System.realloc(ptr, layout, size) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.set(LIVE.get() - layout.size() as isize);
+        LIVE.fetch_sub(layout.size() as isize, Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -47,7 +49,7 @@ fn held(
     labels: &[usize],
     no_grad: bool,
 ) -> (isize, usize) {
-    let before = LIVE.get();
+    let before = LIVE.load(Relaxed);
     let tape = Tape::new();
     let forward = || {
         let logits = model.forward(tape.constant(x.clone()));
@@ -58,18 +60,20 @@ fn held(
     } else {
         forward()
     };
-    (LIVE.get() - before, tape.len())
+    (LIVE.load(Relaxed) - before, tape.len())
 }
 
 #[test]
 fn what_a_tape_holds() {
-    ember::set_threads(1); // Chapter 24: starting threads allocates too
     let mut rng = Rng::new(20);
     let model = mlp(&mut rng);
     let x = Tensor::rand(&[100, 784], &mut rng);
     let labels: Vec<usize> = (0..100).map(|i| i % 10).collect();
     let with = held(&model, &x, &labels, false);
     let without = held(&model, &x, &labels, true);
-    assert_eq!(with, (174_284, 15)); // bytes, nodes
+    // From Chapter 24 on, each of the two matmul rules also holds two flags, 8
+    // bytes more in each boxed closure (Section 24.4): 174,284.
+    let flags = if with.0 == 174_268 { 0 } else { 16 };
+    assert_eq!(with, (174_268 + flags, 15)); // bytes, nodes
     assert_eq!(without, (164_484, 15)); // 9,800 fewer bytes, the same nodes
 }

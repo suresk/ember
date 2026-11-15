@@ -25,7 +25,8 @@ impl<const N: usize> Buffers<N> {
             let Some(g) = &p.grad else { continue };
             let lr = ParamGroup::find(&self.groups, p.id()).lr;
             let g = g.as_slice().expect("a contiguous gradient");
-            let zeros = || (0, [(); N].map(|_| Tensor::zeros(p.value.shape())));
+            let zeros =
+                || (0, std::array::from_fn(|_| Tensor::zeros(p.value.shape())));
             let (t, bufs) = self.state.entry(p.id()).or_insert_with(zeros);
             *t += 1;
             let t = *t;
@@ -36,6 +37,7 @@ impl<const N: usize> Buffers<N> {
 }
 // @end
 
+// @listing buffers-new
 impl<const N: usize> Buffers<N> {
     /// One group, holding every parameter, and no state yet.
     pub fn new(lr: f32) -> Buffers<N> {
@@ -63,6 +65,7 @@ macro_rules! buffered_groups {
         }
     };
 }
+// @end
 
 // @listing centered
 /// RMSProp with `centered=True`: divide by the running standard deviation of
@@ -116,15 +119,19 @@ impl AmsGrad {
 impl Optimizer for AmsGrad {
     fn step(&mut self, params: &mut [&mut Parameter]) {
         let (b1, b2, eps) = (0.9f32, 0.999f32, 1e-8);
+        // The corrections for step t, computed when t changes (once per
+        // parameter), not once per number: (t, 1 − β₁ᵗ, √(1 − β₂ᵗ)).
+        let mut c = (0, 1.0, 1.0);
         self.buffers.step(params, |t, lr, w, g, [m, v, v_max]| {
-            let (c1, c2) = (
-                1.0 - math::powi(b1, t as i32),
-                1.0 - math::powi(b2, t as i32),
-            );
+            if c.0 != t {
+                let t32 = i32::try_from(t).expect("AmsGrad: step count fits in i32");
+                let c2 = 1.0 - math::powi(b2, t32);
+                c = (t, 1.0 - math::powi(b1, t32), c2.sqrt());
+            }
             *m = b1 * *m + (1.0 - b1) * g;
             *v = b2 * *v + (1.0 - b2) * g * g;
             *v_max = v_max.max(*v);
-            *w -= lr / c1 * *m / ((*v_max / c2).sqrt() + eps);
+            *w -= lr / c.1 * *m / (v_max.sqrt() / c.2 + eps);
         });
     }
     buffered_groups!();
@@ -164,6 +171,7 @@ impl Optimizer for Adagrad {
 // @listing lion
 /// Lion (Chen et al., 2023): step by the sign of a blend of the momentum and the
 /// gradient, w ← w − lr·(sign(β₁m + (1 − β₁)g) + λw), then m ← β₂m + (1 − β₂)g.
+/// λ is the field `weight_decay`; the group's weight decay, 0, is not used.
 pub struct Lion {
     pub betas: (f32, f32),
     pub weight_decay: f32,

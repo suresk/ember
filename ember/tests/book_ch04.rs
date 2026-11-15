@@ -24,18 +24,25 @@ fn map_examples() {
 
 #[test]
 fn unary_examples() {
+    // @listing unary-example
     let t = Tensor::from_vec(vec![-2.0, -0.5, 0.0, 1.5], &[4]);
-    assert_eq!(t.neg().to_vec(), vec![2.0, 0.5, -0.0, -1.5]);
     assert_eq!(
         t.mul_scalar(2.0).add_scalar(1.0).to_vec(),
         vec![-3.0, 0.0, 1.0, 4.0]
     );
-    // @listing unary-example
     assert_eq!(t.relu().to_vec(), vec![0.0, 0.0, 0.0, 1.5]);
     assert_eq!(t.powf(2.0).to_vec(), vec![4.0, 0.25, 0.0, 2.25]);
     let s = Tensor::from_vec(vec![-100.0, 0.0, 100.0], &[3]);
     assert_eq!(s.sigmoid().to_vec(), vec![0.0, 0.5, 1.0]); // e^100 is inf in f32
     // @end
+    assert_eq!(t.neg().to_vec(), vec![2.0, 0.5, -0.0, -1.5]);
+    // e^89 overflows f32, so sigmoid(-89) is 0; the true value, about 2.2e-39, is a
+    // subnormal f32. e^88 doesn't, and sigmoid(-88) is that subnormal.
+    let tail = Tensor::from_vec(vec![-89.0, -88.0], &[2])
+        .sigmoid()
+        .to_vec();
+    assert_eq!(tail[0], 0.0);
+    assert!(tail[1] > 0.0 && tail[1] < 1e-38);
     assert_eq!(s.tanh().to_vec(), vec![-1.0, 0.0, 1.0]);
     let e = Tensor::from_vec(vec![1.0, 4.0], &[2]);
     assert_eq!(e.ln().exp().to_vec(), vec![1.0, 4.0]);
@@ -52,7 +59,7 @@ fn which_tensors_take_the_fast_path() {
     assert_eq!(x.transpose(0, 1).as_slice(), None);
 
     let b = Tensor::arange(&[3]);
-    assert_eq!(b.expand(&[2, 3]).as_slice(), None); // stride 0 on a real axis
+    assert_eq!(b.expand(&[2, 3]).as_slice(), None); // stride 0 on an axis of size 2
     assert!(b.expand(&[1, 3]).as_slice().is_some()); // stride 0 on a size-1 axis
     // @end
 }
@@ -138,12 +145,13 @@ fn reductions_on_a_view() {
     // A transpose reduces like the copy it stands for.
     let t = Tensor::arange(&[2, 3]).transpose(0, 1); // [[0, 3], [1, 4], [2, 5]]
     assert_eq!(t.sum(1, false).to_vec(), floats(&[3, 5, 7]));
-    // @end
 
     // Empty lanes: a sum of nothing is 0, a mean of nothing is 0 / 0.
     let empty = Tensor::zeros(&[2, 0]);
     assert_eq!(empty.sum(1, false).to_vec(), vec![0.0, 0.0]);
     assert!(empty.mean(1, false).get(&[0]).is_nan());
+    // @end
+    assert!(empty.sum(1, false).get(&[0]).is_sign_positive()); // +0, not -0
     assert_eq!(empty.sum(0, false).shape(), &[0]);
 }
 
@@ -193,11 +201,14 @@ fn max_and_argmax() {
 
     let ties = Tensor::from_vec(vec![1.0, 3.0, 3.0, 7.0, 7.0, 7.0], &[2, 3]);
     assert_eq!(ties.argmax(1), vec![1, 0]); // the first of the equal values
-    // @end
 
     let nan = Tensor::from_vec(vec![1.0, f32::NAN, 3.0], &[3]);
     assert!(nan.max(0, false).item().is_nan());
+    assert_eq!(nan.argmax(0), vec![1]); // the position of the NaN that max returned
     assert_eq!(f32::NAN.max(3.0), 3.0); // f32::max hides the NaN
+    // @end
+    let first = Tensor::from_vec(vec![f32::NAN, 5.0, f32::NAN], &[3]);
+    assert_eq!(first.argmax(0), vec![0]); // the first NaN stays
 }
 
 #[test]
@@ -233,6 +244,7 @@ fn sum_to_undoes_expand() {
     assert_eq!(y.sum_to(&[]).item(), 15.0);
     assert_eq!(y.sum_to(&[2, 3]).to_vec(), y.to_vec()); // nothing to undo
     // @end
+    assert!(y.sum_to(&[2, 3]).shares_storage(&y)); // returned unchanged, not copied
 
     // @listing sum-to-roundtrip
     let bias = Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]);

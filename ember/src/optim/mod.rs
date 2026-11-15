@@ -18,7 +18,7 @@ pub use rmsprop::{RmsProp, RmsPropState};
 pub use schedule::{
     ConstantLr, CosineLr, LinearWarmup, LrScheduler, StepLr, base_lrs,
 };
-pub use sgd::{Momentum, Sgd, SgdState};
+pub use sgd::{Sgd, SgdState};
 
 use crate::nn::{Module, ParamId, Parameter};
 use crate::tensor::Tensor;
@@ -27,7 +27,8 @@ use crate::train::{CheckpointError, StateDict};
 // @listing optimizer
 /// A rule for updating parameters from their gradients.
 pub trait Optimizer {
-    /// Update every parameter that has a gradient, once the tape is dropped.
+    /// Update every parameter that has a gradient (allocation-free once the
+    /// tape is dropped).
     fn step(&mut self, params: &mut [&mut Parameter]);
     /// The parameter groups. Group 0 holds every parameter no other group lists.
     fn groups(&self) -> &[ParamGroup];
@@ -62,6 +63,9 @@ pub struct ParamGroup {
 
 impl ParamGroup {
     /// The first group that lists `id`, or group 0 if none does.
+    ///
+    /// # Panics
+    /// If `groups` is empty.
     pub fn find(groups: &[ParamGroup], id: ParamId) -> &ParamGroup {
         let listed = groups.iter().find(|g| g.ids.contains(&id));
         listed.unwrap_or(&groups[0])
@@ -76,11 +80,10 @@ pub fn no_decay(model: &mut dyn Module, lr: f32) -> ParamGroup {
     let params = model.parameters().into_iter();
     let flat = params.filter(|p| p.value.ndim() < 2);
     let ids = flat.map(|p| p.id()).collect();
-    let weight_decay = 0.0;
     ParamGroup {
         ids,
         lr,
-        weight_decay,
+        weight_decay: 0.0,
     }
 }
 // @end
@@ -94,10 +97,12 @@ pub(crate) fn update_each<const N: usize>(
     state: [&mut Tensor; N],
     mut f: impl FnMut(&mut f32, f32, [&mut f32; N]),
 ) {
-    assert!(state.iter().all(|s| s.numel() == g.len()));
+    assert_eq!(w.numel(), g.len(), "update_each: gradient size");
+    let sizes_match = state.iter().all(|s| s.numel() == g.len());
+    assert!(sizes_match, "update_each: state size");
     let mut bufs = state.map(|s| s.data_mut().iter_mut());
     for (w, &g) in w.data_mut().iter_mut().zip(g) {
-        let s = bufs.each_mut().map(|b| b.next().unwrap());
+        let s = bufs.each_mut().map(|b| b.next().expect("sizes checked"));
         f(w, g, s);
     }
 }

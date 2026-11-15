@@ -1,8 +1,7 @@
 //! Tests for the Chapter 23 challenges.
 use ember::{
-    BatchNorm1d, BatchNorm2d, LayerNorm, Linear, Module, NormResidual, ReLU, RmsNorm,
-    Rng, Sequential, Tape, Tensor, Tolerance, cumulative, fold_batch_norm, gradcheck,
-    group_norm, state_dict,
+    BatchNorm1d, LayerNorm, Linear, Module, ReLU, Rng, Sequential, Tape, Tensor,
+    Tolerance, gradcheck, state_dict,
 };
 
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
@@ -24,6 +23,7 @@ fn rms(x: &Tensor) -> f32 {
     (sum / v.len() as f64).sqrt() as f32
 }
 
+// @challenge 1
 #[test]
 fn predict_layer_norm_and_running_mean() {
     // @listing predict-test
@@ -42,6 +42,9 @@ fn predict_layer_norm_and_running_mean() {
     assert!(close(&got, &[0.965, 1.266_667], 1e-6));
     // @end
 }
+
+// @challenge 2
+use ember::RmsNorm;
 
 #[test]
 fn rms_normalization() {
@@ -68,6 +71,9 @@ fn rms_normalization() {
     assert!(r.is_ok());
 }
 
+// @challenge 3
+use ember::BatchNorm2d;
+
 #[test]
 fn batch_norm_for_images() {
     // @listing bn2d-test
@@ -76,7 +82,7 @@ fn batch_norm_for_images() {
     let tape = Tape::new();
     let y = bn.forward(tape.constant(x)).value();
     assert_eq!(y.shape(), [2, 3, 2, 2]);
-    let channel0: Vec<f32> = [y.select(1, 0).to_vec()].concat();
+    let channel0 = y.select(1, 0).to_vec();
     let s = 0.163_846; // 1/√37.25: the 8 values are 0..3 and 12..15
     let want = [-7.5, -6.5, -5.5, -4.5, 4.5, 5.5, 6.5, 7.5].map(|d| d * s);
     assert!(close(&channel0, &want, 1e-5));
@@ -88,6 +94,9 @@ fn batch_norm_for_images() {
     assert_eq!(names.join(" "), want);
     // @end
 }
+
+// @challenge 4
+use ember::group_norm;
 
 #[test]
 fn group_normalization() {
@@ -111,6 +120,9 @@ fn group_normalization() {
     assert!(gradcheck(|v| group_norm(v[0], 2, 1e-5), &[small], tol).is_ok());
 }
 
+// @challenge 5
+use ember::cumulative;
+
 #[test]
 fn a_cumulative_average() {
     // @listing cumulative-test
@@ -121,9 +133,12 @@ fn a_cumulative_average() {
     let r = bn.running();
     let want = [4.0, (1.0 + 11.0 / 3.0 + 16.0 / 3.0) / 3.0]; // (3.5 + 6.5 + 2)/3
     assert!(close(&[r.mean.item(), r.var.item()], &want, 1e-6));
-    assert_eq!((r.batches.item(), bn.momentum), (3.0, 1.0 / 3.0));
+    assert_eq!((r.batches.item(), bn.momentum), (3.0, 0.1)); // restored
     // @end
 }
+
+// @challenge 6
+use ember::fold_batch_norm;
 
 #[test]
 fn folding_batch_norm() {
@@ -147,6 +162,9 @@ fn folding_batch_norm() {
     assert!(close(&one, &two, 2e-6));
     // @end
 }
+
+// @challenge 7
+use ember::NormResidual;
 
 /// Twelve blocks `f` = Linear·ReLU·Linear of width 64 with layer norm, before
 /// or after the sum; the RMS after blocks 1, 3, 6 and 12, and of the input's
@@ -185,6 +203,7 @@ fn stack(pre: bool) -> ([f32; 4], f32) {
     )
 }
 
+// @challenge 7
 #[test]
 fn pre_norm_and_post_norm() {
     // @listing residual-test
@@ -194,4 +213,15 @@ fn pre_norm_and_post_norm() {
     assert!(close(&post, &[1.0; 4], 1e-5));
     assert!(close(&[pre_grad, post_grad], &[4.705, 0.934], 1e-3));
     // @end
+    // The block names its parameters, so a checkpoint keeps the branch's names.
+    let mut block = NormResidual {
+        f: Sequential::new(vec![Box::new(Linear::new(2, 2, &mut Rng::new(1)))]),
+        norm: LayerNorm::new(2),
+        pre: true,
+    };
+    let names: Vec<String> = state_dict(&mut block).into_keys().collect();
+    assert_eq!(
+        names,
+        ["f.0.bias", "f.0.weight", "norm.bias", "norm.weight"]
+    );
 }

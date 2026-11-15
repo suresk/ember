@@ -3,12 +3,12 @@
 //! cargo run --release --example tiny_transformer           train, then sort
 //! cargo run --release --example tiny_transformer -- 3000    train 3000 steps
 //! cargo run --release --example tiny_transformer -- baseline no blocks at all
-//! cargo run --release --example tiny_transformer -- challenges  caching, sampling
+//!
+//! Challenges 25.2 and 25.5 have their own example, `tiny_transformer_challenges`.
 
 use ember::{
-    AdamW, Batch, Config, CosineLr, LinearWarmup, LrScheduler, Module, Rng, Tape,
-    Tensor, TinyTransformer, Var, base_lrs, generate_cached, no_decay, sample,
-    train_step,
+    AdamW, Batch, Config, CosineLr, EvalMode, LinearWarmup, LrScheduler, Module, Rng,
+    Tape, Tensor, TinyTransformer, Var, base_lrs, no_decay, train_step,
 };
 use std::time::Instant;
 
@@ -24,7 +24,7 @@ pub fn sort_batch(n: usize, batch: usize, rng: &mut Rng) -> Batch {
     for _ in 0..batch {
         let digits: Vec<usize> = (0..n).map(|_| rng.below(10)).collect();
         let mut sorted = digits.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         let seq = digits.iter().chain(&sorted[..n - 1]);
         ids.extend(seq.map(|&d| d as f32));
         labels.extend(sorted);
@@ -36,6 +36,7 @@ pub fn sort_batch(n: usize, batch: usize, rng: &mut Rng) -> Batch {
 // @listing sorter
 /// The transformer, read only where it predicts the answer: positions `n - 1`
 /// to `2n - 2`, as `[batch·n, vocab]`, the shape `cross_entropy` takes.
+#[derive(Debug)]
 pub struct Sorter {
     pub model: TinyTransformer,
     pub n: usize,
@@ -44,8 +45,10 @@ pub struct Sorter {
 impl Module for Sorter {
     fn forward<'t>(&self, ids: Var<'t>) -> Var<'t> {
         let logits = self.model.forward(ids); // [B, 2n - 1, vocab]
-        let (b, v, n) = (logits.shape()[0], logits.shape()[2], self.n);
-        logits.slice(1, n - 1, 2 * n - 1, 1).reshape(&[b * n, v])
+        let (b, vocab, n) = (logits.shape()[0], logits.shape()[2], self.n);
+        logits
+            .slice(1, n - 1, 2 * n - 1, 1)
+            .reshape(&[b * n, vocab])
     }
     ember::children!(model);
 }
@@ -66,30 +69,38 @@ pub fn config(n: usize, dropout: f32) -> Config {
 
 // @listing greedy
 /// Sort `digits` by asking the model for one digit at a time: each step reads
-/// everything so far and appends the most likely next digit.
-pub fn greedy(model: &TinyTransformer, digits: &[usize]) -> Vec<usize> {
-    let mut seq: Vec<f32> = digits.iter().map(|&d| d as f32).collect();
+/// everything so far and appends the most likely next digit. The model runs in
+/// evaluation mode and is back in its earlier mode afterwards, as in `evaluate`.
+pub fn greedy(model: &mut TinyTransformer, digits: &[usize]) -> Vec<usize> {
+    let model = EvalMode::new(model); // dropout off until the guard drops
+    let mut seq = digits.to_vec();
     for _ in 0..digits.len() {
         let tape = Tape::new();
-        let ids = tape.constant(Tensor::from_vec(seq.clone(), &[1, seq.len()]));
+        let ids = seq.iter().map(|&d| d as f32).collect();
+        let ids = tape.constant(Tensor::from_vec(ids, &[1, seq.len()]));
         let logits = tape.no_grad(|| model.forward(ids)).value(); // [1, T, 10]
         let last = logits.select(1, seq.len() - 1); // [1, 10]
-        seq.push(last.argmax(1)[0] as f32);
+        seq.push(last.argmax(1)[0]);
     }
-    seq[digits.len()..].iter().map(|&d| d as usize).collect()
+    seq.split_off(digits.len())
 }
 // @end
 
-/// The fraction of `count` new sequences that `greedy` sorts exactly right.
-pub fn solved(model: &TinyTransformer, n: usize, count: usize, rng: &mut Rng) -> f32 {
+/// How many of `count` new sequences from `rng` `greedy` sorts exactly right.
+pub fn solved(
+    m: &mut TinyTransformer,
+    n: usize,
+    count: usize,
+    rng: &mut Rng,
+) -> usize {
     let mut right = 0;
     for _ in 0..count {
         let digits: Vec<usize> = (0..n).map(|_| rng.below(10)).collect();
         let mut sorted = digits.clone();
-        sorted.sort();
-        right += (greedy(model, &digits) == sorted) as usize;
+        sorted.sort_unstable();
+        right += (greedy(m, &digits) == sorted) as usize;
     }
-    right as f32 / count as f32
+    right
 }
 
 // @listing train
@@ -117,7 +128,9 @@ pub fn train(c: Config, n: usize, steps: usize, seed: u64) -> (Sorter, Vec<f32>)
 // @listing weights
 /// Block `layer`'s attention weights for one sequence, `[heads, T, T]`: the
 /// blocks below it run as usual, then its attention reports instead of mixing.
+/// The caller switches the model to evaluation mode first.
 pub fn weights(model: &TinyTransformer, seq: &[usize], layer: usize) -> Tensor {
+    assert!(!model.is_training(), "weights: switch dropout off first");
     let tape = Tape::new();
     let ids: Vec<f32> = seq.iter().map(|&d| d as f32).collect();
     let ids = tape.constant(Tensor::from_vec(ids, &[1, seq.len()]));
@@ -131,7 +144,8 @@ pub fn weights(model: &TinyTransformer, seq: &[usize], layer: usize) -> Tensor {
 
 /// One head's weights as text, for `digits` and their `sorted` answer: a row
 /// per answer digit (the position that writes it), a column per position read,
-/// each cell shaded by its weight: blank below 0.1, then `. : + # @`.
+/// each cell shaded by its weight: blank below 0.1, then `.` from 0.1, `:` from
+/// 0.3, `+` from 0.5, `#` from 0.7 and `@` from 0.9.
 pub fn attention_map(
     w: &Tensor,
     digits: &[usize],
@@ -173,27 +187,27 @@ fn run(steps: usize, layers: usize) {
     let start = Instant::now();
     let (mut sorter, losses) = train(c, N, steps, 25);
     let secs = start.elapsed().as_secs_f32();
-    sorter.train(false); // dropout off for sorting
     let per = steps / 10;
     for t in (0..steps).step_by(per).chain([steps - 1]) {
         println!("step {:>5}  loss {:.4}", t + 1, losses[t]);
     }
     let ms = 1e3 * secs / steps as f32;
     println!("{steps} steps in {secs:.1} s, {ms:.1} ms per step");
-    let model = &sorter.model;
-    let mut rng = Rng::new(2025);
-    let right = solved(model, N, 1000, &mut rng) * 1000.0;
-    println!("sorted {right} of 1,000 new sequences");
-    for _ in 0..5 {
+    let model = &mut sorter.model;
+    let mut rng = Rng::new(2025); // the test sequences, then three examples
+    let right = solved(model, N, 1000, &mut rng);
+    println!("sorted {right} of 1000 new sequences");
+    for _ in 0..3 {
         let digits: Vec<usize> = (0..N).map(|_| rng.below(10)).collect();
         println!("{digits:?} -> {:?}", greedy(model, &digits));
     }
     if layers < 2 {
         return;
     }
-    let digits = [6, 9, 7, 0, 2, 4, 1, 9];
+    let digits = [6, 9, 7, 0, 2, 4, 1, 9]; // the first example
     let sorted = greedy(model, &digits);
     let seq = [&digits[..], &sorted[..N - 1]].concat(); // what the model reads
+    model.train(false); // for `weights`
     let w = weights(model, &seq, 1);
     for (a, b) in [(0, 2), (1, 3)] {
         let map = |h| attention_map(&w, &digits, &sorted, h);
@@ -203,82 +217,10 @@ fn run(steps: usize, layers: usize) {
     }
 }
 
-/// Challenges 25.2 and 25.5: decoding with and without a cache, and sampling.
-fn challenges() {
-    let (mut sorter, _) = train(config(N, 0.1), N, 1000, 25);
-    sorter.train(false);
-    let model = &sorter.model;
-    let mut rng = Rng::new(2025);
-    let seqs: Vec<Vec<usize>> = (0..1000)
-        .map(|_| (0..N).map(|_| rng.below(10)).collect())
-        .collect();
-    for cached in [false, true] {
-        let start = Instant::now();
-        let mut same = 0;
-        for digits in &seqs {
-            let out = match cached {
-                false => greedy(model, digits),
-                true => generate_cached(model, digits, N),
-            };
-            let mut sorted = digits.clone();
-            sorted.sort();
-            same += (out == sorted) as usize;
-        }
-        let ms = start.elapsed().as_secs_f32() * 1e3 / seqs.len() as f32;
-        println!("cached {cached}: {ms:.3} ms per sequence, {same} sorted");
-    }
-    let long = Config {
-        context: 256,
-        ..config(N, 0.0)
-    }; // untrained: for timing
-    let model = &TinyTransformer::new(long, &mut Rng::new(25));
-    let prompt = [3, 1, 4, 1, 5, 9, 2, 6];
-    for count in [8, 56, 248] {
-        let start = Instant::now();
-        let mut seq = prompt.to_vec();
-        for _ in 0..count {
-            let tape = Tape::new();
-            let ids: Vec<f32> = seq.iter().map(|&d| d as f32).collect();
-            let ids = tape.constant(Tensor::from_vec(ids, &[1, seq.len()]));
-            let logits = tape.no_grad(|| model.forward(ids)).value();
-            seq.push(logits.select(1, seq.len() - 1).argmax(1)[0]);
-        }
-        let slow = start.elapsed().as_secs_f32() * 1e3;
-        let start = Instant::now();
-        let fast = generate_cached(model, &prompt, count);
-        let quick = start.elapsed().as_secs_f32() * 1e3;
-        assert_eq!(fast, seq[8..]);
-        println!(
-            "{count} tokens: {slow:.1} ms without the cache, {quick:.1} ms with it"
-        );
-    }
-    let model = &sorter.model;
-    for temperature in [0.5, 1.0, 2.0] {
-        let mut right = 0;
-        for digits in &seqs {
-            let mut seq: Vec<f32> = digits.iter().map(|&d| d as f32).collect();
-            for _ in 0..N {
-                let tape = Tape::new();
-                let ids =
-                    tape.constant(Tensor::from_vec(seq.clone(), &[1, seq.len()]));
-                let logits = tape.no_grad(|| model.forward(ids)).value();
-                let last = logits.select(1, seq.len() - 1).reshape(&[10]);
-                seq.push(sample(&last, temperature, 10, &mut rng) as f32);
-            }
-            let mut sorted = digits.clone();
-            sorted.sort();
-            let out: Vec<usize> = seq[N..].iter().map(|&d| d as usize).collect();
-            right += (out == sorted) as usize;
-        }
-        println!("temperature {temperature}: {right} of 1000 sorted");
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("baseline") => run(1000, 0),
-        Some("challenges") => challenges(),
         Some(steps) => run(steps.parse().expect("a number of steps"), 2),
         None => run(1000, 2),
     }

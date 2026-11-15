@@ -71,30 +71,10 @@ pub fn matmul_ikj(a: &[f32], b: &[f32], c: &mut [f32], (m, k, n): Dims) {
 }
 // @end
 
-// @listing blocked
-/// The tile of `c` that `matmul_blocked` holds in local variables, 4 rows by 8
-/// columns, and the rows of `b` it walks before moving to the next tile: a panel.
+// @listing tile-sizes
+/// The tile of `c` that `tile` holds in local variables: 4 rows by 8 columns.
 pub const TILE_M: usize = 4;
 pub const TILE_N: usize = 8;
-pub const PANEL: usize = 256;
-
-/// The same sums again, 4 × 8 entries of `c` at a time, one panel of `PANEL`
-/// rows of `b` at a time.
-pub fn matmul_blocked(a: &[f32], b: &[f32], c: &mut [f32], (m, k, n): Dims) {
-    check_lens(a, b, c, (m, k, n));
-    let (m4, n8) = (m - m % TILE_M, n - n % TILE_N);
-    for p0 in (0..k).step_by(PANEL) {
-        let ps = p0..k.min(p0 + PANEL);
-        for i in (0..m4).step_by(TILE_M) {
-            for j in (0..n8).step_by(TILE_N) {
-                tile(a, b, c, (i, j), ps.clone(), (k, n));
-            }
-        }
-    }
-    // What the tiles miss: the last m % 4 rows, and the last n % 8 columns.
-    edge(a, b, c, m4..m, 0..n, (k, n));
-    edge(a, b, c, 0..m4, n8..n, (k, n));
-}
 // @end
 
 // @listing tile
@@ -128,7 +108,8 @@ pub(crate) fn tile(
 }
 // @end
 
-/// The entries of `c` in `rows` × `cols` that no tile covers, one at a time.
+// @listing edge
+/// Adds the entries of `a @ b` in `rows` × `cols` into `c`, one at a time.
 pub(crate) fn edge(
     a: &[f32],
     b: &[f32],
@@ -145,6 +126,31 @@ pub(crate) fn edge(
         }
     }
 }
+// @end
+
+// @listing blocked
+/// The rows of `b` that `matmul_blocked` walks before it moves on to the next
+/// tile: a panel. 256 suits a 128 KiB first-level cache (Challenge 5.6).
+pub const PANEL: usize = 256;
+
+/// The same sums again, 4 × 8 entries of `c` at a time, one panel of `PANEL`
+/// rows of `b` at a time.
+pub fn matmul_blocked(a: &[f32], b: &[f32], c: &mut [f32], (m, k, n): Dims) {
+    check_lens(a, b, c, (m, k, n));
+    let (m4, n8) = (m - m % TILE_M, n - n % TILE_N);
+    for p0 in (0..k).step_by(PANEL) {
+        let ps = p0..k.min(p0 + PANEL);
+        for i in (0..m4).step_by(TILE_M) {
+            for j in (0..n8).step_by(TILE_N) {
+                tile(a, b, c, (i, j), ps.clone(), (k, n));
+            }
+        }
+    }
+    // What the tiles miss: the last m % 4 rows, and the last n % 8 columns.
+    edge(a, b, c, m4..m, 0..n, (k, n));
+    edge(a, b, c, 0..m4, n8..n, (k, n));
+}
+// @end
 
 // @listing dims
 /// `(batch, m, k, n)` for `a @ b`: two matrices, `[m, k]` and `[k, n]`, or two
@@ -171,16 +177,24 @@ impl Tensor {
         let (batch, m, k, n) = matmul_dims(&self.shape, &other.shape);
         // Kernels read slices, so strided operands are copied first.
         let (a, b) = (self.contiguous(), other.contiguous());
-        let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap());
+        let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap()); // can't fail
         let mut c = vec![0.0; batch * m * n];
+        // @hide
         let threads = threads_for((m, k, n)); // Chapter 24
+        // @show
         for t in 0..batch {
             let (a, b) = (&a[t * m * k..][..m * k], &b[t * k * n..][..k * n]);
             let c = &mut c[t * m * n..][..m * n];
-            matmul_parallel(a, b, c, (m, k, n), threads);
+            // @hide
+            if threads > 1 {
+                matmul_parallel(a, b, c, (m, k, n), threads); // Chapter 24
+                continue;
+            }
+            // @show
+            matmul_blocked(a, b, c, (m, k, n));
         }
         let mut shape = self.shape.clone();
-        *shape.last_mut().unwrap() = n;
+        *shape.last_mut().expect("a matrix has a last axis") = n;
         Tensor::from_vec(c, &shape)
         // @end
     }
@@ -197,15 +211,17 @@ pub fn set_threads(n: usize) {
 }
 
 /// The limit: what `set_threads` set, or else the `EMBER_THREADS` environment
-/// variable, or else the number of threads the machine can run at once.
+/// variable (if it is a positive integer), or else the number of threads the
+/// machine can run at once.
 pub fn threads() -> usize {
     match THREADS.load(Relaxed) {
         0 => {
             let var = std::env::var("EMBER_THREADS").ok();
             let n = var.and_then(|v| v.parse().ok()).filter(|&n| n > 0);
             let cores = || thread::available_parallelism().map_or(1, |n| n.get());
-            THREADS.store(n.unwrap_or_else(cores), Relaxed);
-            threads()
+            let n = n.unwrap_or_else(cores);
+            THREADS.store(n, Relaxed);
+            n
         }
         n => n,
     }
@@ -216,28 +232,34 @@ pub fn threads() -> usize {
 /// `matmul_blocked` with the rows of `c` cut into bands, one per thread. Each
 /// entry is still computed by one thread, adding the same products in the same
 /// order, so the result is the same, to the bit, for any number of threads.
-pub fn matmul_parallel(a: &[f32], b: &[f32], c: &mut [f32], d: Dims, threads: usize) {
+pub fn matmul_parallel(
+    a: &[f32],
+    b: &[f32],
+    c: &mut [f32],
+    d: Dims,
+    n_threads: usize,
+) {
     let (m, k, n) = d;
     check_lens(a, b, c, d);
-    let band = m.div_ceil(threads.max(1)).next_multiple_of(TILE_M); // rows each
+    let band = m.div_ceil(n_threads.max(1)).next_multiple_of(TILE_M); // rows each
     if band >= m || k == 0 || n == 0 {
         return matmul_blocked(a, b, c, d); // one band: no thread to start
     }
     let mut bands = a.chunks(band * k).zip(c.chunks_mut(band * n));
-    let (a0, c0) = bands.next().unwrap(); // this thread's own band
+    let (a0, c0) = bands.next().expect("band < m: two bands at least");
     thread::scope(|scope| {
         for (a, c) in bands {
             let rows = c.len() / n; // `band`, or fewer in the last band
             scope.spawn(move || matmul_blocked(a, b, c, (rows, k, n)));
         }
-        matmul_blocked(a0, b, c0, (band, k, n));
+        matmul_blocked(a0, b, c0, (band, k, n)); // the caller's own band
     }); // every thread has finished here
 }
 // @end
 
 // @listing threshold
-/// A thread costs microseconds to start and stop, so each one should get at
-/// least this much work (Section 24.7 measures it).
+/// Threads start one after another, microseconds each, so each one should get
+/// at least this much work (Section 24.7 measures it).
 pub const MIN_FLOPS_PER_THREAD: usize = 1 << 21;
 
 /// How many threads a product of `dims` is worth: at most `threads()`.

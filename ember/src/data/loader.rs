@@ -4,6 +4,7 @@
 use super::Dataset;
 use crate::rng::Rng;
 use crate::tensor::Tensor;
+use std::iter::FusedIterator;
 
 /// A batch: the inputs stacked along a first axis, and their classes.
 pub type Batch = (Tensor, Vec<usize>);
@@ -106,4 +107,6 @@ impl<D: Dataset + ?Sized> Iterator for Batches<'_, D> {
 }
 
 impl<D: Dataset + ?Sized> ExactSizeIterator for Batches<'_, D> {}
+
+impl<D: Dataset + ?Sized> FusedIterator for Batches<'_, D> {} // `None` stays `None`
 // @end

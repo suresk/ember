@@ -348,13 +348,7 @@ fn spiral_run() -> (TensorDataset, TensorDataset) {
 fn fresh(seed: u64) -> (Sequential, AdamW, Progress) {
     let mut rng = Rng::new(seed);
     let model = spirals::mlp(16, &mut rng);
-    let at = Progress {
-        step: 0,
-        epoch: 0,
-        best: f32::INFINITY,
-        rng,
-    };
-    (model, AdamW::new(0.1), at)
+    (model, AdamW::new(0.1), Progress::new(rng)) // the generator after the model
 }
 
 #[test]
@@ -417,4 +411,62 @@ fn a_resumed_run_needs_everything() {
     assert_eq!(val(&whole), 2529.0); // the run, resumed or not: 0.2529
     assert_eq!(val(&no_moments), 2375.0); // fresh moments: 0.2375
     assert_eq!(val(&new_order), 2608.0); // other batches: 0.2608
+}
+
+#[test]
+fn fit_twice_in_one_process_is_the_same_run() {
+    let scratch = Scratch::new("fit-twice");
+    let (train, val) = spiral_run();
+    let plan = |stop| Plan {
+        epochs: 20,
+        stop,
+        batch: 10,
+        warmup: 5,
+        dir: scratch.0.clone(),
+    };
+    let (mut model, mut opt, mut at) = fresh(20);
+    let whole =
+        fit((&mut model, &mut opt), (&train, &val), &mut at, &plan(20)).unwrap();
+    let (mut m, mut o, mut a) = fresh(20);
+    fit((&mut m, &mut o), (&train, &val), &mut a, &plan(10)).unwrap();
+    assert_eq!(o.groups()[0].lr, 0.1); // fit puts the base rate back
+    let rest = fit((&mut m, &mut o), (&train, &val), &mut a, &plan(20)).unwrap();
+    assert_eq!(whole[10..], rest);
+    assert_eq!(bits(&mut m), bits(&mut model));
+}
+
+#[test]
+fn a_failed_restore_changes_nothing() {
+    let scratch = Scratch::new("restore-fails");
+    let (train, val) = spiral_run();
+    let plan = Plan {
+        epochs: 2,
+        stop: 1,
+        batch: 10,
+        warmup: 5,
+        dir: scratch.0.clone(),
+    };
+    let (mut m, mut o, mut a) = fresh(20);
+    fit((&mut m, &mut o), (&train, &val), &mut a, &plan).unwrap();
+    let last = train::load(scratch.0.join("last.embr")).unwrap();
+    let (mut other, _, _) = fresh(99);
+    let before = bits(&mut other);
+    // An `Sgd` has nowhere to put AdamW's moments: the model is put back.
+    let err = restore(&mut other, &mut Sgd::new(0.1), &last).unwrap_err();
+    assert!(matches!(err, CheckpointError::Keys { .. }));
+    assert_eq!(bits(&mut other), before);
+    // A generator of five pieces is a shape error, not a panic.
+    let mut bad = last.clone();
+    bad.insert("rng".into(), Tensor::zeros(&[5]));
+    let err = restore(&mut other, &mut AdamW::new(0.1), &bad).unwrap_err();
+    assert_eq!(err.to_string(), "rng: shape [5], expected [4]");
+    let mut extra = last.clone();
+    extra.insert("lr".into(), Tensor::zeros(&[]));
+    let err = restore(&mut other, &mut AdamW::new(0.1), &extra).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        r#"missing keys [], unexpected keys ["lr"]"#
+    );
+    assert_eq!(bits(&mut other), before);
+    assert!(restore(&mut other, &mut AdamW::new(0.1), &last).is_ok());
 }

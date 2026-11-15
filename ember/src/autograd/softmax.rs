@@ -9,10 +9,12 @@ use crate::tensor::Tensor;
 // @listing lse-parts
 /// The two parts of `ln Σ e^x` for one lane: its largest element `m`, and
 /// `ln Σ e^(x - m)`, whose largest term is `e^0 = 1`. The sum is added up in f64.
+/// A NaN anywhere makes `m` NaN, so the NaN reaches the result.
 fn lse_lane(lane: &[f32]) -> (f32, f32) {
-    let m = lane.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x));
+    let larger = |m: f32, &x: &f32| if x > m || x.is_nan() { x } else { m };
+    let m = lane.iter().fold(f32::NEG_INFINITY, larger);
     if !m.is_finite() {
-        return (m, 0.0); // every element -∞ (ln 0), or one is +∞
+        return (m, 0.0); // every element -∞ (ln 0), one is +∞, or one is NaN
     }
     let s: f64 = lane.iter().map(|&x| math::exp(x - m) as f64).sum();
     (m, math::ln64(s) as f32)
@@ -52,7 +54,7 @@ impl Tensor {
 
 impl<'t> Var<'t> {
     // @listing var-softmax
-    /// Softmax along `dim`, one node. Backward is the Jacobian-vector product
+    /// Softmax along `dim`, one node. Backward is the vector-Jacobian product
     /// `y ⊙ (g - Σ g ⊙ y)`, with the sum along `dim`.
     pub fn softmax(self, dim: usize) -> Var<'t> {
         let f = move |x: &Tensor| x.softmax(dim);
@@ -64,12 +66,12 @@ impl<'t> Var<'t> {
     // @end
 
     // @listing var-log-softmax
-    /// Log-softmax along `dim`, one node. Backward is `g - softmax(x) · Σ g`; the
-    /// softmax is recomputed from `x`, not read from the rounded output.
+    /// Log-softmax along `dim`, one node. Backward is `g - p · Σ g`, with the
+    /// softmax `p = e^y` read from the output `y`, which is accurate (Section 13.3).
     pub fn log_softmax(self, dim: usize) -> Var<'t> {
         let f = move |x: &Tensor| x.log_softmax(dim);
-        self.unary("log_softmax", f, move |x, _, g| {
-            g.sub(&x.softmax(dim).mul(&g.sum(dim, true)))
+        self.unary("log_softmax", f, move |_, y, g| {
+            g.sub(&y.exp().mul(&g.sum(dim, true)))
         })
     }
     // @end

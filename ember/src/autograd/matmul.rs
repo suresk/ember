@@ -16,17 +16,27 @@ impl<'t> Var<'t> {
     /// `g` the gradient of the result, `self` gets `g @ otherᵀ` and `other` gets
     /// `selfᵀ @ g`.
     pub fn matmul(self, other: Var<'t>) -> Var<'t> {
+        // @hide
         // Chapter 24: a gradient no parent wants is not computed.
         let (need_a, need_b) = (self.requires_grad(), other.requires_grad());
+        // @show
         let rule = move |a: &Tensor, b: &Tensor, g: &Tensor| {
-            let ga = if need_a { g.matmul(&t(b)) } else { unneeded(a) };
-            let gb = if need_b { t(a).matmul(g) } else { unneeded(b) };
-            (ga, gb)
+            // @hide
+            if !need_a {
+                return (unneeded(a), t(a).matmul(g));
+            }
+            if !need_b {
+                return (g.matmul(&t(b)), unneeded(b));
+            }
+            // @show
+            (g.matmul(&t(b)), t(a).matmul(g))
         };
         self.binary(other, "matmul", Tensor::matmul, rule)
     }
 }
+// @end
 
+// @listing unneeded
 /// A stand-in for a gradient the walk will drop: a 0 expanded to `x`'s shape,
 /// one number, which `binary`'s `sum_to` passes through untouched.
 fn unneeded(x: &Tensor) -> Tensor {
@@ -54,25 +64,23 @@ mod tests {
 
     #[test]
     fn a_bug_with_the_right_shape() {
+        // @listing untransposed-example
         fn bug<'t>(v: &[Var<'t>]) -> Var<'t> {
             v[0].matmul_untransposed(v[1])
         }
-        // @listing untransposed-example
         let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
         let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], &[2, 2]);
         let worst = gradcheck(bug, &[a.clone(), b.clone()], Tolerance::default())
-            .unwrap_err(); // it fails, and says where:
+            .unwrap_err();
         assert_eq!((worst.input, worst.index.clone()), (0, vec![0, 0]));
-        assert_eq!(worst.analytic, 19.0); // (W B)[0][0] = 1·5 + 2·7
-        assert!((worst.numeric - 17.0).abs() < 1e-3); // (W Bᵀ)[0][0] = 1·5 + 2·6
+        assert_eq!(worst.analytic, 19.0); // (W B)[0][0]
+        assert!((worst.numeric - 17.0).abs() < 1e-3); // (W Bᵀ)[0][0]
+        let sym = Tensor::from_vec(vec![5.0, 6.0, 6.0, 8.0], &[2, 2]); // B = Bᵀ
+        assert!(gradcheck(bug, &[a.clone(), sym], Tolerance::default()).is_ok());
         // @end
         assert!((worst.ratio - 11.70).abs() < 0.01, "{worst:?}"); // 2 / 0.171
-        let ok =
-            gradcheck(|v| v[0].matmul(v[1]), &[a.clone(), b], Tolerance::default());
+        let ok = gradcheck(|v| v[0].matmul(v[1]), &[a, b], Tolerance::default());
         assert!(ok.is_ok(), "{ok:?}");
-        // A symmetric b hides the bug: b equals its transpose.
-        let sym = Tensor::from_vec(vec![5.0, 6.0, 6.0, 8.0], &[2, 2]);
-        assert!(gradcheck(bug, &[a, sym], Tolerance::default()).is_ok());
     }
 
     #[test]

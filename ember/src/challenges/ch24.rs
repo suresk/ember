@@ -1,5 +1,6 @@
 //! Chapter 24 challenges.
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 
@@ -37,8 +38,9 @@ pub fn par_map(x: &Tensor, f: impl Fn(f32) -> f32 + Sync, threads: usize) -> Ten
 
 // @listing tn-kernel
 /// Adds `aᵀ · b` into `c`, for `a` row-major `k × m` and `b` row-major `k × n`:
-/// row `p` of each gives `c[i][..] += a[p][i] · b[p][..]`, an ikj loop that
-/// reads both operands in order, so `aᵀ` is never copied.
+/// for each `p`, `c[i][..] += a[p][i] · b[p][..]`: a kij loop, which adds the
+/// outer product of row `p` of `a` and row `p` of `b` into `c`, reading both
+/// operands in order, so `aᵀ` is never copied.
 pub fn matmul_tn_kernel(a: &[f32], b: &[f32], c: &mut [f32], (m, k, n): Dims) {
     check_lens(a, b, c, (m, k, n)); // a has k · m numbers, like m · k
     if m == 0 || n == 0 {
@@ -77,11 +79,14 @@ impl Tensor {
 // @listing im2col-parallel
 /// `x.im2col(win)` with the images in bands, one band per thread. A thread
 /// can't share `x`, which holds an `Rc`, so it gets its images as a slice and
-/// builds a tensor of its own from them.
+/// builds a tensor of its own from a copy of them.
 pub fn im2col_parallel(x: &Tensor, win: Window, threads: usize) -> Tensor {
     let &[n, c, h, w] = x.shape() else {
         panic!("im2col_parallel: shape {:?}", x.shape());
     };
+    if n * c * h * w == 0 {
+        return x.im2col(win); // no images, or empty ones: nothing to split
+    }
     let x = x.contiguous();
     let [rows, cols] = win.matrix([n, c, h, w]);
     let mut m = vec![0.0; rows * cols];
@@ -108,12 +113,13 @@ pub fn matmul_stacks(
     a: &[f32],
     b: &[f32],
     c: &mut [f32],
-    (batch, dims): (usize, Dims),
+    batch: usize,
+    dims: Dims,
     threads: usize,
 ) {
     let (m, k, n) = dims;
     assert_eq!([a.len(), b.len()], [batch * m * k, batch * k * n]);
-    if m * k * n == 0 {
+    if batch * m * k * n == 0 {
         return; // nothing to add into `c`
     }
     let per = batch.div_ceil(threads.max(1)); // matrices per thread
@@ -143,23 +149,58 @@ pub fn prefetched_epoch(
     mut step: impl FnMut(Batch),
 ) {
     let (x, labels) = ds.tensors();
+    if labels.is_empty() {
+        return; // no examples, no batches
+    }
     let (pixels, row) = (x.as_slice().unwrap(), x.numel() / labels.len());
     let mut order: Vec<usize> = (0..labels.len()).collect();
     rng.shuffle(&mut order);
-    let (send, receive) = mpsc::sync_channel::<(Vec<f32>, Vec<usize>)>(2);
+    let (tx, rx) = mpsc::sync_channel::<(Vec<f32>, Vec<usize>)>(2);
     thread::scope(|s| {
         s.spawn(move || {
             for chunk in order.chunks_exact(size) {
                 let gather = chunk.iter().flat_map(|&i| &pixels[i * row..][..row]);
                 let ys = chunk.iter().map(|&i| labels[i]).collect();
-                if send.send((gather.copied().collect(), ys)).is_err() {
+                if tx.send((gather.copied().collect(), ys)).is_err() {
                     return; // the receiver is gone
                 }
             }
         });
-        for (xs, ys) in receive {
+        for (xs, ys) in rx {
             step((Tensor::from_vec(xs, &[size, row]), ys));
         }
     });
+}
+// @end
+
+// @listing pool
+/// Buffers kept for reuse, by length: `take` hands out a zeroed buffer, reusing
+/// one that `give` returned if there is one of that length.
+#[derive(Debug, Default)]
+pub struct Pool {
+    free: HashMap<usize, Vec<Vec<f32>>>,
+}
+
+impl Pool {
+    /// A buffer of `len` zeros: a returned one, filled with zeros, or a new one.
+    pub fn take(&mut self, len: usize) -> Vec<f32> {
+        match self.free.get_mut(&len).and_then(Vec::pop) {
+            Some(mut buf) => {
+                buf.fill(0.0);
+                buf
+            }
+            None => vec![0.0; len],
+        }
+    }
+
+    /// Keep `buf` for the next `take` of its length.
+    pub fn give(&mut self, buf: Vec<f32>) {
+        self.free.entry(buf.len()).or_default().push(buf);
+    }
+
+    /// How many buffers the pool holds.
+    pub fn held(&self) -> usize {
+        self.free.values().map(Vec::len).sum()
+    }
 }
 // @end

@@ -36,19 +36,21 @@ impl Tensor {
         // @end
     }
 
+    // @listing zip-map
     /// `f` applied to each pair of elements of `self` and `other`, broadcast to a
     /// common shape.
     pub fn zip_map(&self, other: &Tensor, f: impl Fn(f32, f32) -> f32) -> Tensor {
         self.binary(other, "zip_map", f)
     }
+    // @end
 
     // @listing binary
     /// The engine behind `zip_map`, `add`, `sub`, `mul` and `div`. `op` names the
     /// operation in the panic message when the shapes don't broadcast.
     fn binary(&self, rhs: &Tensor, op: &str, f: impl Fn(f32, f32) -> f32) -> Tensor {
         // Fast path: same shape, and both tensors are one run of their buffers.
-        if let (Some(a), Some(b)) = (self.as_slice(), rhs.as_slice())
-            && self.shape == rhs.shape
+        if self.shape == rhs.shape
+            && let (Some(a), Some(b)) = (self.as_slice(), rhs.as_slice())
         {
             let data = a.iter().zip(b).map(|(&x, &y)| f(x, y)).collect();
             return Tensor::from_vec(data, &self.shape);
@@ -67,7 +69,6 @@ impl Tensor {
     pub fn add(&self, other: &Tensor) -> Tensor {
         self.binary(other, "add", |x, y| x + y)
     }
-    // @end
 
     pub fn sub(&self, other: &Tensor) -> Tensor {
         self.binary(other, "sub", |x, y| x - y)
@@ -80,20 +81,12 @@ impl Tensor {
     pub fn div(&self, other: &Tensor) -> Tensor {
         self.binary(other, "div", |x, y| x / y)
     }
+    // @end
 
     // @listing unary
     pub fn add_scalar(&self, s: f32) -> Tensor {
         self.map(|x| x + s)
     }
-
-    pub fn exp(&self) -> Tensor {
-        self.map(math::exp)
-    }
-
-    pub fn powf(&self, p: f32) -> Tensor {
-        self.map(|x| math::powf(x, p))
-    }
-    // @end
 
     pub fn mul_scalar(&self, s: f32) -> Tensor {
         self.map(|x| x * s)
@@ -102,18 +95,29 @@ impl Tensor {
     pub fn neg(&self) -> Tensor {
         self.map(|x| -x)
     }
+    // @end
+
+    // @listing unary-math
+    pub fn exp(&self) -> Tensor {
+        self.map(math::exp)
+    }
 
     pub fn ln(&self) -> Tensor {
         self.map(math::ln)
     }
 
+    pub fn powf(&self, p: f32) -> Tensor {
+        self.map(|x| math::powf(x, p))
+    }
+
     pub fn sqrt(&self) -> Tensor {
-        self.map(f32::sqrt)
+        self.map(f32::sqrt) // correctly rounded (IEEE 754): the same bits everywhere
     }
 
     pub fn tanh(&self) -> Tensor {
         self.map(math::tanh)
     }
+    // @end
 
     // @listing activations
     /// `max(x, 0)`, written so that a NaN stays NaN.
@@ -121,8 +125,8 @@ impl Tensor {
         self.map(|x| if x < 0.0 { 0.0 } else { x })
     }
 
-    /// `1 / (1 + e^(-x))`. For very negative x, `e^(-x)` overflows to infinity and
-    /// the result is `1 / inf = 0`, which is the right answer to f32 precision.
+    /// `1 / (1 + e^(-x))`. Below about -88.7, `e^(-x)` overflows to infinity and the
+    /// result is `1 / inf = 0`, within 1e-38 of the true value.
     pub fn sigmoid(&self) -> Tensor {
         self.map(|x| 1.0 / (1.0 + math::exp(-x)))
     }
@@ -177,14 +181,15 @@ macro_rules! operators {
 }
 
 operators!(Add add, Sub sub, Mul mul, Div div);
-// @end
 
+/// `-&a`, unary minus.
 impl std::ops::Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Tensor {
         Tensor::neg(self)
     }
 }
+// @end
 
 impl Tensor {
     // @listing lanes
@@ -218,27 +223,26 @@ impl Tensor {
 // @listing sum-f64
 /// The sum of `xs`, added up in f64. Callers round it to f32 once, at the end.
 fn sum_f64(xs: &[f32]) -> f64 {
-    xs.iter().map(|&x| x as f64).sum()
+    // A fold from +0.0, because `Iterator::sum` starts from -0.0.
+    xs.iter().fold(0.0, |s, &x| s + x as f64)
 }
 // @end
 
 impl Tensor {
+    // @listing sum
     /// The sum along axis `dim`. With `keepdim`, the axis stays, with size 1.
     pub fn sum(&self, dim: usize, keepdim: bool) -> Tensor {
-        // @solution ch04 sum
         let data = self.lanes(dim, |lane| sum_f64(lane) as f32);
         Tensor::from_vec(data, &self.reduced_shape(dim, keepdim))
-        // @end
     }
 
     /// The mean along axis `dim`. With `keepdim`, the axis stays, with size 1.
     pub fn mean(&self, dim: usize, keepdim: bool) -> Tensor {
-        // @solution ch04 mean
         let mean = |lane: &[f32]| (sum_f64(lane) / lane.len() as f64) as f32;
         let data = self.lanes(dim, mean);
         Tensor::from_vec(data, &self.reduced_shape(dim, keepdim))
-        // @end
     }
+    // @end
 
     /// The largest value along axis `dim`. With `keepdim`, the axis stays.
     pub fn max(&self, dim: usize, keepdim: bool) -> Tensor {
@@ -255,31 +259,33 @@ impl Tensor {
     }
 
     /// For each lane along `dim`, the position of its largest value; the first one if
-    /// several are equal. In row-major order of the shape with `dim` removed.
+    /// several are equal, and the first NaN if there is one, as `max` returns NaN.
+    /// In row-major order of the shape with `dim` removed.
     pub fn argmax(&self, dim: usize) -> Vec<usize> {
         // @solution ch04 argmax
         self.lanes(dim, |lane| {
             assert!(!lane.is_empty(), "argmax: an empty axis");
-            // Strictly greater: on a tie, the earlier position stays.
-            (1..lane.len())
-                .fold(0, |best, k| if lane[k] > lane[best] { k } else { best })
+            // Strictly greater: on a tie, the earlier position stays. A NaN replaces
+            // any number, and once `best` is a NaN nothing replaces it.
+            let wins = |k: usize, best: usize| {
+                lane[k] > lane[best] || (lane[k].is_nan() && !lane[best].is_nan())
+            };
+            (1..lane.len()).fold(0, |best, k| if wins(k, best) { k } else { best })
         })
         // @end
     }
 
-    /// The sum of every element.
+    // @listing sum-all
+    /// The sum of every element, rounded to f32 once.
     pub fn sum_all(&self) -> f32 {
-        // @solution ch04 sum_all
         match self.as_slice() {
             Some(run) => sum_f64(run) as f32,
             None => sum_f64(&self.to_vec()) as f32,
         }
-        // @end
     }
 
     /// The value of a tensor with exactly one element, whatever its shape.
     pub fn item(&self) -> f32 {
-        // @solution ch04 item
         assert_eq!(
             self.numel(),
             1,
@@ -288,8 +294,8 @@ impl Tensor {
             self.numel()
         );
         self.storage[self.offset]
-        // @end
     }
+    // @end
 
     /// The sum that undoes `expand`: add `self` up along every axis that expanding a
     /// tensor of `shape` to `self`'s shape would add or stretch.

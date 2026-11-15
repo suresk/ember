@@ -23,7 +23,7 @@ pub fn step(model: &mut impl Module, x: &Tensor, y: &Tensor, lr: f32) -> f32 {
 /// Move every parameter against its gradient: w ← w - lr·w̄.
 pub fn sgd(model: &mut impl Module, lr: f32) {
     for p in model.parameters() {
-        let g = p.grad.as_ref().expect("a gradient");
+        let g = p.grad.as_ref().expect("every parameter is on the tape");
         p.value = p.value.sub(&g.mul_scalar(lr));
     }
 }
@@ -38,13 +38,13 @@ pub fn mlp(hidden: usize, rng: &mut Rng) -> Sequential {
         Box::new(Linear::new(hidden, 1, rng)),
     ])
 }
-// @end
 
 /// The model's outputs for `x`, one per row.
 pub fn outputs(model: &impl Module, x: &Tensor) -> Vec<f32> {
     let tape = Tape::new();
     model.forward(tape.constant(x.clone())).value().to_vec()
 }
+// @end
 
 // @listing main
 fn main() {

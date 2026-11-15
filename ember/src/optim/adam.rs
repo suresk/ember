@@ -114,12 +114,16 @@ impl Optimizer for Adam {
             let new = || AdamState::new(p.value.shape());
             let s = self.state.entry(p.id()).or_insert_with(new);
             s.step += 1;
-            let t = s.step as i32;
+            let t = i32::try_from(s.step).expect("Adam: step count fits in i32");
             // The bias corrections.
             let (c1, c2) = (1.0 - math::powi(b1, t), 1.0 - math::powi(b2, t));
             let (step_size, c2_sqrt) = (lr / c1, c2.sqrt());
-            let l2 = if self.decoupled { 0.0 } else { wd }; // λ in the gradient
-            let decay = lr * (wd - l2); // or lr·λ beside it
+            // λ in the gradient (L2), or lr·λ beside the step (decoupled).
+            let (l2, decay) = if self.decoupled {
+                (0.0, lr * wd)
+            } else {
+                (wd, 0.0)
+            };
             let buffers = [&mut s.exp_avg, &mut s.exp_avg_sq];
             update_each(&mut p.value, g, buffers, |w, g, [m, v]| {
                 *w -= decay * *w; // AdamW: w ← (1 − lr·λ)w

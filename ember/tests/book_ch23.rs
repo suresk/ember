@@ -78,10 +78,11 @@ fn digits(got: [f32; 5], want: [f32; 5]) -> bool {
     ok
 }
 
-/// PyTorch's default variance for 100 inputs, He's, and twice He's.
+/// The three standard deviations: PyTorch's default scale for 100 inputs,
+/// `1/√300`; He's, `√(2/100)`; and twice He's.
 fn three_scales() -> [f32; 3] {
-    let (default, he) = (0.1 / 3f32.sqrt(), init::he_std(100));
-    assert!(near(default, 0.0577, 1e-4) && near(he, 0.1414, 1e-4));
+    let (default, he) = (1.0 / 300f32.sqrt(), init::he_std(100));
+    assert!(near(default, 0.057_735, 1e-6) && near(he, 0.141_421, 1e-6));
     [default, he, 2.0 * he]
 }
 
@@ -92,18 +93,16 @@ fn drifting_activations() {
         row(default, false),
         [0.398, 0.158, 0.0102, 1.12e-4, 3.10e-4]
     ));
-    assert!(digits(row(he, false), [0.975, 0.949, 0.900, 0.869, 2.41]));
-    assert!(digits(row(twice, false), [1.95, 3.79, 28.8, 890.0, 2464.0]));
+    assert!(digits(row(he, false), [0.975, 0.949, 0.901, 0.871, 2.41]));
+    assert!(digits(row(twice, false), [1.95, 3.80, 28.8, 891.0, 2467.0]));
 }
 
 #[test]
 fn normalized_activations() {
+    let want = [0.7037, 0.7059, 0.6904, 0.7037, 0.4607];
     for std in three_scales() {
-        // Normalized, the three rows are the same to four digits.
-        assert!(digits(
-            row(std, true),
-            [0.7037, 0.7059, 0.6904, 0.7037, 0.4607]
-        ));
+        // Normalized, the three rows are the same to the four digits printed.
+        assert!(close(&row(std, true), &want, 5e-5));
     }
 }
 
@@ -221,8 +220,9 @@ fn running_statistics() {
     assert!(close(&y.to_vec(), &want, 1e-5));
     assert_eq!(bn.running().batches.item(), 3.0);
     // @end
-    let rest: f32 = 0.9f32.powi(3);
+    let rest: f32 = 0.9 * 0.9 * 0.9;
     assert!(near(rest, 0.729, 1e-6));
+    assert!(near(rest * 0.9 * 0.9, 0.590_49, 1e-6)); // after five batches
     assert!(near(0.9f32.powi(50), 0.005_154, 1e-6));
     assert!(near(0.9f32.powi(100), 2.66e-5, 1e-7));
 }
@@ -312,9 +312,9 @@ fn buffers_in_a_checkpoint() {
 
 #[test]
 fn no_decay_on_gains_and_shifts() {
+    // @listing no-decay-test
     let mut rng = Rng::new(23);
     let mut model = mlp_norm(&[784, 256, 256, 10], Norm::Layer, &mut rng);
-    // @listing no-decay-test
     let group = no_decay(&mut model, 1e-3);
     let opt = AdamW::new(1e-3).group(group); // group 0 decays, group 1 doesn't
     let sizes = |g: usize, model: &mut Sequential| {
@@ -324,8 +324,9 @@ fn no_decay_on_gains_and_shifts() {
         mine.map(|p| p.value.numel()).sum::<usize>()
     };
     assert_eq!(opt.groups()[1].ids.len(), 7); // 3 biases, 2 gains, 2 shifts
-    assert_eq!(sizes(1, &mut model), 3 * 256 + 3 * 256 + 10); // 1,546 numbers
-    assert_eq!(sizes(0, &mut model), 784 * 256 + 256 * 256 + 256 * 10);
+    assert_eq!(sizes(1, &mut model), (256 + 256 + 10) + 4 * 256); // 1,546
+    let weights = 784 * 256 + 256 * 256 + 256 * 10; // 268,800 of 270,346
+    assert_eq!(sizes(0, &mut model), weights);
     // @end
 }
 
@@ -375,4 +376,25 @@ fn normalization_on_the_spirals() {
     let (batch, batch_acc) = spirals_run(Norm::Batch, 0.3);
     assert!(near(plain, 0.5749, 1e-4) && near(plain_acc, 0.64, 1e-6));
     assert!(batch < 2e-4 && batch_acc == 1.0);
+}
+
+#[test]
+fn a_bias_before_normalization() {
+    // Batch norm removes a per-feature bias; layer norm keeps b − mean(b).
+    let tape = Tape::new();
+    let h = Tensor::randn(&[8, 4], &mut Rng::new(23));
+    let b = t(&[0., 1., 2., 5.], &[4]);
+    let out =
+        |m: &dyn Module, x: Tensor| m.forward(tape.constant(x)).value().to_vec();
+    let (ln, bn) = (LayerNorm::new(4), BatchNorm1d::new(4));
+    assert!(close(&out(&bn, h.add(&b)), &out(&bn, h.clone()), 1e-5));
+    assert!(!close(&out(&ln, h.add(&b)), &out(&ln, h.clone()), 1e-1));
+    let centered = b.add_scalar(-2.0); // b − mean(b)
+    assert!(close(
+        &out(&ln, h.add(&b)),
+        &out(&ln, h.add(&centered)),
+        1e-5
+    ));
+    let c = t(&[3.0; 4], &[4]); // a constant bias: layer norm removes it
+    assert!(close(&out(&ln, h.add(&c)), &out(&ln, h), 1e-5));
 }

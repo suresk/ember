@@ -1,8 +1,5 @@
 //! Tests for the Chapter 16 challenges.
-use ember::{
-    Averaged, ClassicalSgd, Lookahead, Optimizer, Parameter, Rng, Sgd, Tensor,
-    heavy_ball_tuning,
-};
+use ember::{Optimizer, Parameter, Rng, Sgd, Tensor};
 
 fn close(xs: &[f32], want: &[f32], tol: f32) -> bool {
     xs.len() == want.len() && xs.iter().zip(want).all(|(a, b)| (a - b).abs() <= tol)
@@ -24,6 +21,7 @@ fn step(w: &mut Parameter, opt: &mut dyn Optimizer, g: impl Fn(f32) -> f32) {
     opt.step(&mut [&mut *w]);
 }
 
+// @challenge 1
 #[test]
 fn three_momentum_steps() {
     // @listing predict-test
@@ -41,6 +39,7 @@ fn three_momentum_steps() {
     // @end
 }
 
+// @challenge 2
 #[test]
 fn dampening_and_a_cold_start() {
     // @listing dampening-test
@@ -65,6 +64,9 @@ fn dampening_and_a_cold_start() {
     // @end
 }
 
+// @challenge 3
+use ember::ClassicalSgd;
+
 #[test]
 fn classical_momentum() {
     // @listing classical-test
@@ -88,6 +90,7 @@ fn classical_momentum() {
     // @end
 }
 
+// @challenge 4
 /// The mean and variance of `xs`, in f64.
 fn moments(xs: &[f32]) -> (f64, f64) {
     let n = xs.len() as f64;
@@ -96,6 +99,7 @@ fn moments(xs: &[f32]) -> (f64, f64) {
     (mean, var)
 }
 
+// @challenge 4
 #[test]
 fn momentum_averages_noise() {
     // @listing noise-test
@@ -117,6 +121,9 @@ fn momentum_averages_noise() {
     assert!((m2 - 10.0513).abs() < 1e-3 && (v2 - 4.8862).abs() < 1e-3);
     // @end
 }
+
+// @challenge 5
+use ember::heavy_ball_tuning;
 
 #[test]
 fn tuned_heavy_ball() {
@@ -145,6 +152,9 @@ fn tuned_heavy_ball() {
     // @end
 }
 
+// @challenge 6
+use ember::Averaged;
+
 #[test]
 fn polyak_averaging() {
     // @listing averaged-test
@@ -165,6 +175,9 @@ fn polyak_averaging() {
     // @end
 }
 
+// @challenge 7
+use ember::Lookahead;
+
 #[test]
 fn lookahead_calms_momentum() {
     // @listing lookahead-test
@@ -175,7 +188,7 @@ fn lookahead_calms_momentum() {
             step(&mut w, opt, |w| w); // f(w) = ½w²
             losses.push(0.5 * w.value.item().powi(2));
         }
-        let worst = losses[5..].iter().cloned().fold(0.0, f32::max);
+        let worst = losses[5..].iter().copied().fold(0.0, f32::max);
         (worst, losses[49])
     };
     let (worst, last) = run(&mut Sgd::new(0.1).momentum(0.9));

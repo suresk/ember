@@ -8,7 +8,7 @@ use crate::tensor::Tensor;
 
 // @listing classical
 /// Momentum in Sutskever et al.'s form: v ← μv + lr·w̄, then w ← w − v. The
-/// learning rate is inside the velocity.
+/// learning rate is inside the velocity. Groups' weight decay is ignored.
 pub struct ClassicalSgd {
     groups: Vec<ParamGroup>,
     mu: f32,
@@ -38,12 +38,12 @@ impl Optimizer for ClassicalSgd {
         for p in params.iter_mut() {
             let Some(g) = &p.grad else { continue };
             let lr = ParamGroup::find(&self.groups, p.id()).lr;
-            let first = !self.velocity.contains_key(&p.id());
-            let zeros = || Tensor::zeros(g.shape());
+            let zeros = || Tensor::zeros(g.shape()); // μ·0 + lr·w̄ = lr·w̄
             let v = self.velocity.entry(p.id()).or_insert_with(zeros);
-            let (g, v) = (g.to_vec(), v.data_mut());
-            for ((w, v), g) in p.value.data_mut().iter_mut().zip(v).zip(g) {
-                *v = if first { lr * g } else { self.mu * *v + lr * g };
+            let g = g.as_slice().expect("ClassicalSgd: a contiguous gradient");
+            let (w, v) = (p.value.data_mut(), v.data_mut());
+            for ((w, v), &g) in w.iter_mut().zip(v.iter_mut()).zip(g) {
+                *v = self.mu * *v + lr * g;
                 *w -= *v;
             }
         }
@@ -62,9 +62,8 @@ impl Optimizer for ClassicalSgd {
 /// ½(a·x² + b·y²), a < b: both directions shrink by (√κ − 1)/(√κ + 1) per step.
 pub fn heavy_ball_tuning(a: f32, b: f32) -> (f32, f32) {
     let (ra, rb) = (a.sqrt(), b.sqrt());
-    let lr = 4.0 / (ra + rb).powi(2);
-    let mu = ((rb - ra) / (rb + ra)).powi(2); // κ = b/a
-    (lr, mu)
+    let (sum, root_mu) = (ra + rb, (rb - ra) / (rb + ra)); // √μ, with κ = b/a
+    (4.0 / (sum * sum), root_mu * root_mu)
 }
 // @end
 
@@ -125,17 +124,16 @@ pub struct Lookahead<O: Optimizer> {
 
 impl<O: Optimizer> Lookahead<O> {
     pub fn new(inner: O, k: usize, alpha: f32) -> Lookahead<O> {
-        let (slow, steps) = (HashMap::new(), 0);
+        let slow = HashMap::new();
         Lookahead {
             inner,
             k,
             alpha,
             slow,
-            steps,
+            steps: 0,
         }
     }
 }
-
 // @end
 
 // @listing lookahead-step
@@ -151,8 +149,8 @@ impl<O: Optimizer> Optimizer for Lookahead<O> {
             return;
         }
         for p in params.iter_mut() {
-            let slow = self.slow.get_mut(&p.id()).unwrap().data_mut();
-            for (s, w) in slow.iter_mut().zip(p.value.data_mut()) {
+            let slow = self.slow.get_mut(&p.id()).expect("inserted above");
+            for (s, w) in slow.data_mut().iter_mut().zip(p.value.data_mut()) {
                 *s += self.alpha * (*w - *s);
                 *w = *s;
             }

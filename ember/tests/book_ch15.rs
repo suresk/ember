@@ -2,7 +2,7 @@
 //! parameter groups, SGD and weight decay.
 use ember::{
     Linear, Module, Optimizer, ParamGroup, ParamId, Parameter, Rng, Sgd, Tape,
-    Tensor, l2_step, mse_loss, toy,
+    Tensor, mse_loss, toy,
 };
 
 // The examples are compiled into this test as modules (their `main`s go unused).
@@ -17,6 +17,7 @@ fn close(xs: &[f32], want: &[f32], tol: f32) -> bool {
     xs.len() == want.len() && xs.iter().zip(want).all(|(a, b)| (a - b).abs() <= tol)
 }
 
+// @listing mse-step
 /// Section 14.2's step on the mean squared error, with the update handed to `opt`.
 fn mse_step(model: &mut impl Module, x: &Tensor, y: &Tensor, opt: &mut Sgd) -> f32 {
     model.zero_grad();
@@ -30,6 +31,7 @@ fn mse_step(model: &mut impl Module, x: &Tensor, y: &Tensor, opt: &mut Sgd) -> f
     opt.step(&mut model.parameters());
     loss
 }
+// @end
 
 /// Every number of a model, in `parameters()` order.
 fn numbers(model: &mut impl Module) -> Vec<f32> {
@@ -135,6 +137,7 @@ fn weight_decay_by_hand() {
     // @end
 }
 
+// @listing penalized-step
 /// One step on the mean squared error plus `lambda/2` times the sum of the squares
 /// of the parameters `decays` picks, put on the tape with a second `param`.
 fn penalized_step(
@@ -159,6 +162,7 @@ fn penalized_step(
     opt.step(&mut model.parameters());
     fit
 }
+// @end
 
 #[test]
 fn decay_is_the_gradient_of_a_penalty() {
@@ -184,7 +188,7 @@ fn no_decay_on_biases() {
     let biases: Vec<ParamId> = model
         .parameters()
         .iter()
-        .filter(|p| p.value.ndim() == 1)
+        .filter(|p| p.value.ndim() < 2)
         .map(|p| p.id())
         .collect();
     let no_decay = ParamGroup {
@@ -193,31 +197,32 @@ fn no_decay_on_biases() {
         weight_decay: 0.0,
     };
     let mut opt = Sgd::new(0.1).weight_decay(0.01).group(no_decay);
+    // The same network, with (0.01 / 2)·Σw² on its weight matrices in the loss.
+    let mut penalized = xor::mlp(4, &mut Rng::new(0));
+    let mut plain = Sgd::new(0.1);
+    let matrices = |p: &Parameter| p.value.ndim() >= 2;
     for _ in 0..100 {
         mse_step(&mut model, &x, &y, &mut opt);
+        penalized_step(&mut penalized, (&x, &y), 0.01, matrices, &mut plain);
     }
+    assert!(close(&numbers(&mut model), &numbers(&mut penalized), 1e-6));
     // @end
     assert_eq!(opt.groups().len(), 2);
     assert_eq!(ParamGroup::find(opt.groups(), biases[1]).weight_decay, 0.0);
     let weight = model.parameters()[0].id();
     assert_eq!(ParamGroup::find(opt.groups(), weight).weight_decay, 0.01);
+}
 
-    // The same as Challenge 14.5's penalty, lambda·Σw² on weight matrices only,
-    // with lambda half the decay.
-    let mut again = xor::mlp(4, &mut Rng::new(0));
-    for _ in 0..100 {
-        l2_step(&mut again, &x, &y, 0.1, 0.005);
-    }
-    assert!(close(&numbers(&mut model), &numbers(&mut again), 1e-6));
-
-    // And the test-local penalty with the same choice of parameters.
-    let mut third = xor::mlp(4, &mut Rng::new(0));
-    let mut plain = Sgd::new(0.1);
-    let weights = |p: &Parameter| p.value.ndim() == 2;
-    for _ in 0..100 {
-        penalized_step(&mut third, (&x, &y), 0.01, weights, &mut plain);
-    }
-    assert!(close(&numbers(&mut model), &numbers(&mut third), 1e-6));
+#[test]
+#[should_panic(expected = "Sgd: a parameter in two groups")]
+fn a_parameter_in_two_groups_panics() {
+    let p = Parameter::new(Tensor::zeros(&[1]));
+    let group = |lr| ParamGroup {
+        ids: vec![p.id()],
+        lr,
+        weight_decay: 0.0,
+    };
+    let _ = Sgd::new(0.1).group(group(0.1)).group(group(0.5));
 }
 
 #[test]

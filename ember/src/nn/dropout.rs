@@ -11,7 +11,7 @@ use std::cell::RefCell;
 /// `1 - p` and scaled by `1 / (1 - p)`, or zeroed; in evaluation, the identity.
 #[derive(Debug)]
 pub struct Dropout {
-    pub p: f32,
+    p: f32, // private, so that nothing gets past `new`'s check
     training: bool,
     rng: RefCell<Rng>, // `forward` takes `&self`, and drawing needs `&mut`
 }
@@ -20,19 +20,24 @@ impl Dropout {
     /// A dropout layer in training mode, with a generator of its own.
     pub fn new(p: f32, seed: u64) -> Dropout {
         assert!((0.0..1.0).contains(&p), "Dropout: p = {p}, needs 0 ≤ p < 1");
-        let (training, rng) = (true, RefCell::new(Rng::new(seed)));
-        Dropout { p, training, rng }
+        let rng = RefCell::new(Rng::new(seed));
+        Dropout {
+            p,
+            training: true,
+            rng,
+        }
+    }
+    /// The probability of dropping a unit.
+    pub fn p(&self) -> f32 {
+        self.p
     }
     /// A fresh mask: `1 / (1 - p)` with probability `1 - p`, else 0.
     pub fn mask(&self, shape: &[usize]) -> Tensor {
-        let (keep, n) = (1.0 - self.p, shape.iter().product());
+        let (keep, n): (f32, usize) = (1.0 - self.p, shape.iter().product());
         let scale = 1.0 / keep;
         let mut rng = self.rng.borrow_mut(); // released at the end of `mask`
-        let draw = |_| if rng.uniform() < keep { scale } else { 0.0 };
-        Tensor::from_vec((0..n).map(draw).collect(), shape)
-    }
-    pub fn is_training(&self) -> bool {
-        self.training
+        let draw = || if rng.uniform() < keep { scale } else { 0.0 };
+        Tensor::from_vec(std::iter::repeat_with(draw).take(n).collect(), shape)
     }
 }
 // @end
@@ -51,6 +56,9 @@ impl Module for Dropout {
     }
     fn train(&mut self, on: bool) {
         self.training = on;
+    }
+    fn is_training(&self) -> bool {
+        self.training
     }
 }
 // @end

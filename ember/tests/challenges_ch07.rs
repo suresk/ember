@@ -9,13 +9,17 @@ fn grad(grads: &Gradients, v: Var) -> Vec<f32> {
     grads.get(v).expect("a gradient").to_vec()
 }
 
+// @challenge 1
 #[test]
 fn predict_the_tape() {
     let tape = Tape::new();
     let x = tape.leaf(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]));
     let w = tape.leaf(Tensor::from_vec(vec![2.0, -1.0, 0.5], &[3]));
     let c = tape.constant(Tensor::from_vec(vec![1.0; 3], &[3]));
-    let l = x.mul(w).add(c).mul(x).sum_all(); // the sum of w·x² + c·x
+    let u = x.mul(w);
+    let v = u.add(c);
+    let p = v.mul(x);
+    let l = p.sum_all(); // the sum of w·x² + c·x
     assert_eq!(tape.len(), 7);
     assert_eq!(l.id(), 6);
     assert_eq!(l.value().item(), 8.5); // 3 - 2 + 7.5
@@ -23,9 +27,11 @@ fn predict_the_tape() {
     assert_eq!(grad(&grads, x), [5.0, -3.0, 4.0]); // 2wx + c
     assert_eq!(grad(&grads, w), [1.0, 4.0, 9.0]); // x²
     assert!(grads.get(c).is_none());
-    assert_eq!(grads.count(), 6); // every node but c
+    // Six gradients: x, w and the four operations.
+    assert!([u, v, p, l].iter().all(|&n| grads.get(n).is_some()));
 }
 
+// @challenge 2
 #[test]
 fn detach_stops_the_gradient() {
     let tape = Tape::new();
@@ -39,6 +45,7 @@ fn detach_stops_the_gradient() {
     assert_eq!(tape.len(), 4); // x, a detached copy, y, another copy
 }
 
+// @challenge 3
 #[test]
 fn a_seed_for_a_vector_output() {
     let tape = Tape::new();
@@ -65,6 +72,7 @@ fn a_seed_has_the_output_shape() {
     x.mul(x).backward_with(Tensor::zeros(&[2]));
 }
 
+// @challenge 4
 #[test]
 fn two_backward_passes() {
     let tape = Tape::new();
@@ -87,6 +95,16 @@ fn two_backward_passes() {
     assert_eq!(grad(&merged, b), [1.0, 2.0]);
 }
 
+#[test]
+#[should_panic(expected = "merge: Gradients of two tapes")]
+fn merge_wants_one_tape() {
+    let (t1, t2) = (Tape::new(), Tape::new());
+    let a = t1.leaf(scalar(1.0));
+    let b = t2.leaf(scalar(2.0));
+    let _ = a.sum_all().backward().merge(b.sum_all().backward());
+}
+
+// @challenge 5
 #[test]
 fn one_node_for_many_inputs() {
     let tape = Tape::new();
@@ -111,13 +129,23 @@ fn add_n_wants_one_shape() {
 }
 
 #[test]
+#[should_panic(expected = "add_n: Vars of two tapes")]
+fn add_n_wants_one_tape() {
+    let (t1, t2) = (Tape::new(), Tape::new());
+    t1.leaf(scalar(5.0)); // id 0 on t1
+    let w = t2.leaf(scalar(3.0)); // id 0 on t2
+    t1.add_n(&[w]);
+}
+
+// @challenge 6
+#[test]
 fn bytes_on_the_tape() {
     let tape = Tape::new();
     let x = tape.leaf(Tensor::arange(&[1000]));
     let y = x.mul(x);
     y.sum_all();
     assert_eq!(tape.value_bytes(), 8_004); // x, y, and one number
-    x.detach(); // shares x's buffer
+    tape.constant(x.value()); // what Challenge 7.2's detach records
     assert_eq!(tape.value_bytes(), 8_004);
 
     // Section 7.8's chain: 100,001 numbers, one per node.
@@ -132,6 +160,7 @@ fn bytes_on_the_tape() {
     assert_eq!(12_800_128 / 400_004, 32);
 }
 
+// @challenge 7
 #[test]
 fn only_the_leaves_keep_gradients() {
     let tape = Tape::new();

@@ -2,6 +2,7 @@
 //! made of them.
 
 use crate::autograd::tape::Var;
+use crate::children;
 use crate::nn::{
     Dropout, Embedding, LayerNorm, Linear, Module, MultiHeadAttention, ReLU,
 };
@@ -48,15 +49,15 @@ impl Module for Mlp {
 // @end
 
 impl Block {
-    /// A block of width `dim`; the two dropout layers draw their seeds from `rng`.
+    /// A block of width `dim`. It draws from `rng` in this order: the attention's
+    /// `qkv` and `proj`, the MLP's `up` and `down`, then the seeds of `drop1` and
+    /// `drop2`. Every number of Section 25.8 depends on that order.
     pub fn new(dim: usize, heads: usize, p: f32, rng: &mut Rng) -> Block {
         let (ln1, ln2) = (LayerNorm::new(dim), LayerNorm::new(dim));
         let attn = MultiHeadAttention::new(dim, heads, rng);
-        let up = Linear::new(dim, 4 * dim, rng);
-        let mlp = Mlp {
-            up,
-            down: Linear::new(4 * dim, dim, rng),
-        };
+        let up = Linear::new(dim, 4 * dim, rng); // `up` before `down`
+        let down = Linear::new(4 * dim, dim, rng);
+        let mlp = Mlp { up, down };
         let drop1 = Dropout::new(p, rng.next_u64());
         let drop2 = Dropout::new(p, rng.next_u64());
         Block {
@@ -99,7 +100,11 @@ impl Module for TinyTransformer {
     /// Token ids `[B, T]` to logits `[B, T, vocab]`; the logits at position `i`
     /// predict token `i + 1` from tokens `0..=i`.
     fn forward<'t>(&self, ids: Var<'t>) -> Var<'t> {
-        let t = ids.shape()[1];
+        let (t, context) = (ids.shape()[1], self.pos.weight.value.shape()[0]);
+        assert!(
+            t <= context,
+            "TinyTransformer: {t} positions, context {context}"
+        );
         let at = ids.tape().constant(Tensor::arange(&[t])); // positions 0..t
         let x = self.tok.forward(ids) + self.pos.forward(at); // [B, T, dim]
         self.head.forward(self.ln.forward(self.blocks.forward(x)))

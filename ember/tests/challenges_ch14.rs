@@ -1,9 +1,7 @@
 //! Tests for the Chapter 14 challenges.
 #![allow(clippy::approx_constant)] // ln 2 and ln 3 to four places
 use ember::{
-    Linear, Module, ReLU, Rng, Sequential, Tanh, Tape, cross_entropy, fit_early,
-    gd_step, held_out_loss, l2_penalty, l2_step, lr_range, moons, mse_loss,
-    spirals_k, toy,
+    Linear, Module, ReLU, Rng, Sequential, Tanh, Tape, cross_entropy, mse_loss, toy,
 };
 
 // The chapter's examples, as modules (their `main`s go unused).
@@ -18,6 +16,36 @@ fn count(model: &mut dyn Module) -> usize {
     model.parameters().iter().map(|p| p.value.numel()).sum()
 }
 
+// @challenge 2 3
+use ember::{Tensor, Var};
+
+/// One step of gradient descent on `loss(model(x))`; returns the loss before
+/// it. Challenge 14.7's `gd_step`, copied so that 14.2 and 14.3 don't need 14.7.
+fn gd_step(
+    model: &mut dyn Module,
+    x: &Tensor,
+    lr: f32,
+    loss: impl for<'t> Fn(Var<'t>) -> Var<'t>,
+) -> f32 {
+    model.zero_grad();
+    let value = {
+        let tape = Tape::new();
+        let l = loss(model.forward(tape.constant(x.clone())));
+        l.backward_into(&mut model.parameters());
+        l.value().item()
+    };
+    for p in model.parameters() {
+        if let Some(g) = &p.grad {
+            p.value = p.value.sub(&g.mul_scalar(lr));
+        }
+    }
+    value
+}
+
+// @challenge 3 6
+use ember::moons;
+
+// @challenge 1
 #[test]
 fn predict_the_numbers() {
     let mut rng = Rng::new(14);
@@ -34,8 +62,12 @@ fn predict_the_numbers() {
     assert_eq!(tape.len(), 21); // the same graph, without the loss
     assert_eq!(count(&mut wide), 4482);
     assert_eq!(200 * (2 * 16 + 16 * 16 + 16 * 2), 64_000); // multiply-adds
+    assert_eq!(200 * (2 * 64 + 64 * 64 + 64 * 2), 870_400); // at width 64
     assert_eq!((200usize.div_ceil(32), 200 / 32), (7, 6)); // batches of 32
 }
+
+// @challenge 2
+use ember::spirals_k;
 
 // @listing three-test
 #[test]
@@ -62,6 +94,8 @@ fn three_spirals() {
 }
 // @end
 
+// @challenge 3
+
 #[test]
 fn two_moons() {
     let mut rng = Rng::new(14);
@@ -87,6 +121,7 @@ fn two_moons() {
 }
 
 // @listing act-test
+// @challenge 4
 /// The loss after 500 steps of a 2-2-1 network on XOR, with tanh or ReLU.
 fn xor_loss(relu: bool, seed: u64) -> f32 {
     let mut rng = Rng::new(seed);
@@ -101,6 +136,7 @@ fn xor_loss(relu: bool, seed: u64) -> f32 {
         .unwrap()
 }
 
+// @challenge 4
 #[test]
 fn tanh_or_relu() {
     let fits = |relu| (0..20).filter(|&seed| xor_loss(relu, seed) < 0.01).count();
@@ -110,6 +146,9 @@ fn tanh_or_relu() {
     assert!(stuck.iter().zip(want).all(|(l, w)| (l - w).abs() < 1e-3));
 }
 // @end
+
+// @challenge 5
+use ember::{l2_penalty, l2_step};
 
 // @listing l2-test
 #[test]
@@ -146,6 +185,9 @@ fn an_l2_penalty() {
 }
 // @end
 
+// @challenge 6
+use ember::{fit_early, held_out_loss};
+
 // @listing early-test
 #[test]
 fn early_stopping() {
@@ -160,6 +202,20 @@ fn early_stopping() {
     assert_eq!(spirals::accuracy(&model, &held), 0.905);
 }
 // @end
+
+#[test]
+fn early_stopping_stops_at_max_steps() {
+    let mut rng = Rng::new(14);
+    let train = moons(15, 0.3, &mut rng);
+    let held = moons(100, 0.3, &mut rng);
+    let mut model = spirals::mlp(32, &mut rng);
+    // 25 does not divide 60: the last check comes after 10 steps, at step 60.
+    let stopped = fit_early(&mut model, (&train, &held), 1.0, (25, 100, 60));
+    assert_eq!(stopped.steps, 60);
+}
+
+// @challenge 7
+use ember::lr_range;
 
 #[test]
 fn learning_rate_range_test() {
@@ -183,6 +239,21 @@ fn learning_rate_range_test() {
     assert!(curve[99].1.is_nan());
 }
 
+#[test]
+#[should_panic(expected = "lr_range: 1 steps")]
+fn a_range_of_one_step() {
+    let (x, y) = toy::xor();
+    let mut model = xor::mlp(4, &mut Rng::new(0));
+    lr_range(
+        &mut model,
+        &x,
+        |p| mse_loss(p, p.tape().constant(y.clone())),
+        (0.1, 1.0),
+        1,
+    );
+}
+
+// @challenge 3
 #[test]
 fn moons_shape() {
     let (x, labels) = moons(10, 0.0, &mut Rng::new(1));

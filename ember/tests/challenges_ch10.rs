@@ -1,5 +1,5 @@
 //! Tests for the Chapter 10 challenges: `cargo test --test challenges_ch10`.
-use ember::{Gradients, Tape, Tensor, Tolerance, Var, directional_check, gradcheck};
+use ember::{Gradients, Tape, Tensor, Tolerance, Var, gradcheck};
 
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), shape)
@@ -15,6 +15,10 @@ fn golden(shape: &[usize], lo: f32, hi: f32) -> Tensor {
     Tensor::from_vec((1..=n).map(|k| lo + (hi - lo) * frac(k)).collect(), shape)
 }
 
+// @challenge 6 7
+use ember::directional_check;
+
+// @challenge 1
 #[test]
 fn predict_matmul_gradients() {
     let tape = Tape::new();
@@ -31,6 +35,7 @@ fn predict_matmul_gradients() {
     assert_eq!(grad(&gram, x), [6.0, 10.0, 14.0, 6.0, 10.0, 14.0]);
 }
 
+// @challenge 2
 #[test]
 fn matvec_backward() {
     let tape = Tape::new();
@@ -48,6 +53,7 @@ fn matvec_backward() {
     assert!(r.is_ok(), "{r:?}");
 }
 
+// @challenge 3
 #[test]
 fn quadratic_form_gradient() {
     // @listing quadratic
@@ -70,6 +76,7 @@ fn quadratic_form_gradient() {
     assert!(r.is_ok(), "{r:?}");
 }
 
+// @challenge 4
 #[test]
 fn allclose_rel() {
     let (a, b) = (t(&[1.0, 1000.0], &[2]), t(&[1.001, 1001.0], &[2]));
@@ -81,6 +88,7 @@ fn allclose_rel() {
     assert!(!a.allclose_rel(&t(&[1.0, 1000.0, 0.0], &[3]), 1.0, 1.0));
 }
 
+// @challenge 5
 #[test]
 fn broadcast_matmul_backward() {
     let tape = Tape::new();
@@ -96,10 +104,12 @@ fn broadcast_matmul_backward() {
     assert!(r.is_ok(), "{r:?}");
 }
 
+// @challenge 6
+
 #[test]
 fn directional_derivative_check() {
     let x = [golden(&[2, 3], -2.0, 2.0)];
-    let d = [golden(&[2, 3], -1.0, 1.0)]; // the direction
+    let d = [t(&[0.3, -0.8, 0.5, 0.9, -0.2, -0.6], &[2, 3])]; // not a multiple of x
     let (a, n) = directional_check(|v| v[0].tanh(), &x, &d, 5e-3);
     assert!((a - n).abs() <= 1e-3 + 1e-2 * n.abs(), "{a} {n}");
     // tanh with 1 - y for 1 - y²: the directional check catches it.
@@ -114,15 +124,17 @@ fn directional_derivative_check() {
         5e-3,
     );
     assert!(
-        (a - -2.2401).abs() < 1e-3 && (n - 0.1887).abs() < 1e-3,
+        (a - -0.7800).abs() < 1e-3 && (n - 0.5786).abs() < 1e-3,
         "{a} {n}"
     );
 }
 
+// @challenge 7
+
 #[test]
 fn gram_matrix_bugs() {
     let x = [golden(&[3, 2], -1.0, 1.0)];
-    let d = [golden(&[3, 2], -1.0, 1.0)]; // a direction, for L = Σ y
+    let d = [t(&[0.4, -0.7, 0.9, 0.2, -0.5, 0.6], &[3, 2])]; // not a multiple of x
     // @listing gram
     type Rule = fn(&Tensor, &Tensor, &Tensor) -> Tensor;
     let rules: [Rule; 3] = [

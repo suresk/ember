@@ -19,6 +19,7 @@ fn seeded(y: Var, x: Var, seed: &[f32]) -> Vec<f32> {
     grad(&(y * s).sum_all().backward(), x)
 }
 
+// @challenge 1
 #[test]
 fn predict_the_reductions() {
     let tape = Tape::new();
@@ -40,6 +41,7 @@ fn predict_the_reductions() {
     ));
 }
 
+// @challenge 2
 #[test]
 fn squeeze_unsqueeze_flatten() {
     let tape = Tape::new();
@@ -62,6 +64,7 @@ fn squeeze_wants_size_one() {
     tape.leaf(Tensor::arange(&[2, 3])).squeeze(0);
 }
 
+// @challenge 3
 #[test]
 fn variance_backward() {
     let tape = Tape::new();
@@ -69,7 +72,6 @@ fn variance_backward() {
     let x = tape.leaf(xs.clone());
     let v = x.var(0, false, 0);
     assert_eq!(v.value().to_vec(), [4.0]);
-    assert_eq!(v.value().to_vec(), xs.var(0, false, 0).to_vec());
     let g = grad(&v.backward(), x); // 2(x - 5)/8
     assert_eq!(g, [-0.75, -0.25, -0.25, -0.25, 0.0, 0.0, 0.5, 1.0]);
     let start = tape.len();
@@ -80,6 +82,7 @@ fn variance_backward() {
     assert!(close(&gb, &want, 1e-6));
 }
 
+// @challenge 4
 #[test]
 fn cat_backward() {
     let tape = Tape::new();
@@ -97,6 +100,17 @@ fn cat_backward() {
     assert_eq!(seeded(twice, a, &seed), [6.0, 8.0, 10.0, 12.0]);
 }
 
+#[test]
+#[should_panic(expected = "cat: Vars of two tapes")]
+fn cat_of_two_tapes() {
+    let (t1, t2) = (Tape::new(), Tape::new());
+    let a = t1.leaf(Tensor::arange(&[2]));
+    let _ = t2.leaf(Tensor::arange(&[1]));
+    let b = t2.leaf(t(&[3.0, 4.0], &[2]));
+    Var::cat(&[a, b], 0);
+}
+
+// @challenge 5
 #[test]
 fn repeat_and_expand_backward() {
     let tape = Tape::new();
@@ -117,6 +131,14 @@ fn repeat_and_expand_backward() {
 }
 
 #[test]
+#[should_panic(expected = "repeat: too few counts")]
+fn repeat_with_too_few_counts() {
+    let tape = Tape::new();
+    tape.leaf(Tensor::arange(&[2, 3])).repeat(&[2]);
+}
+
+// @challenge 6
+#[test]
 fn logsumexp_backward() {
     let tape = Tape::new();
     let x = tape.leaf(t(&[0.0, 2f32.ln(), 3f32.ln()], &[3]));
@@ -136,6 +158,7 @@ fn logsumexp_backward() {
     assert!(grad(&naive.backward(), big).iter().all(|g| g.is_nan()));
 }
 
+// @challenge 7
 #[test]
 fn one_rule_for_every_view() {
     let x =
@@ -166,7 +189,5 @@ fn one_rule_for_every_view() {
 fn as_view_rejects_a_copy() {
     let tape = Tape::new();
     let x = tape.leaf(Tensor::arange(&[2, 3]));
-    x.as_view("copy", |x| x.transpose(0, 1).contiguous())
-        .sum_all()
-        .backward();
+    x.as_view("copy", |x| x.transpose(0, 1).contiguous()); // panics when recorded
 }

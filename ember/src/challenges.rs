@@ -41,8 +41,8 @@ pub use ch12::{
     orthogonal, truncated_normal,
 };
 pub use ch13::{
-    bce_with_logits, cross_entropy_masked, cross_entropy_smoothed, nll_loss,
-    softmax_jacobian, softmax_t,
+    bce_with_logits, cross_entropy_lean, cross_entropy_masked,
+    cross_entropy_smoothed, nll_loss, softmax_jacobian, softmax_t,
 };
 pub use ch14::{
     Stopped, fit_early, gd_step, held_out_loss, l2_penalty, l2_step, lr_range, moons,
@@ -71,7 +71,7 @@ pub use ch23::{
     BatchNorm2d, NormResidual, RmsNorm, cumulative, fold_batch_norm, group_norm,
 };
 pub use ch24::{
-    MIN_PER_THREAD, im2col_parallel, matmul_stacks, matmul_tn_kernel, par_map,
+    MIN_PER_THREAD, Pool, im2col_parallel, matmul_stacks, matmul_tn_kernel, par_map,
     prefetched_epoch,
 };
 pub use ch25::{

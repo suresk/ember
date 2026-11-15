@@ -1,6 +1,5 @@
 //! Tests for the Chapter 6 challenges: `cargo test --test challenges_ch06`.
 use ember::autograd::scalar::Value;
-use ember::{neuron, numeric_grads};
 
 fn close(x: f32, y: f32, tol: f32) -> bool {
     (x - y).abs() <= tol
@@ -24,6 +23,10 @@ fn predict_graph() -> [Value; 4] {
     [x, y, z, l]
 }
 
+// @challenge 4
+use ember::neuron;
+
+// @challenge 1
 #[test]
 fn predict_gradients() {
     let [x, y, z, l] = predict_graph();
@@ -36,6 +39,7 @@ fn predict_gradients() {
     assert_eq!([x.grad(), y.grad(), z.grad()], [-3.0, -3.0, 15.0]);
 }
 
+// @challenge 2
 #[test]
 fn zero_grad_resets_the_graph() {
     let (a, b, c, f) = (
@@ -56,6 +60,7 @@ fn zero_grad_resets_the_graph() {
     assert_eq!([a.grad(), b.grad()], [-8.0, 12.0]);
 }
 
+// @challenge 3
 #[test]
 fn div_and_sigmoid() {
     let (a, b) = (Value::new(3.0), Value::new(2.0));
@@ -70,7 +75,16 @@ fn div_and_sigmoid() {
     assert_eq!(s.topo_order().len(), 7);
     s.backward();
     assert!(close(x.grad(), 0.1875, 1e-6)); // s(1 - s) = 3/16
+
+    // Below about -88.7, e^-x overflows: the value is right, the gradient is NaN.
+    let x = Value::new(-100.0);
+    let s = x.sigmoid();
+    s.backward();
+    assert_eq!(s.data(), 0.0);
+    assert!(x.grad().is_nan()); // exp's local derivative inf, times -0
 }
+
+// @challenge 4
 
 #[test]
 fn a_two_input_neuron() {
@@ -99,9 +113,19 @@ fn neuron_wants_a_weight_per_input() {
     );
 }
 
+// @challenge 5
+use ember::numeric_grads;
+
+/// tanh(b + w₁x₁ + w₂x₂) of `[x₁, x₂, w₁, w₂, b]`: Challenge 6.4's neuron,
+/// written out so that this check doesn't need 6.4.
+fn two_input_neuron(v: &[Value]) -> Value {
+    let n = v[4].clone() + &v[2] * &v[0];
+    (n + &v[3] * &v[1]).tanh()
+}
+
 #[test]
 fn numeric_grads_agree_with_backward() {
-    let f = |v: &[Value]| neuron(&v[..2], &v[2..4], &v[4]);
+    let f = two_input_neuron;
     let at = [2.0, -1.0, 0.5, -0.25, -1.0];
     let inputs: Vec<Value> = at.iter().map(|&x| Value::new(x)).collect();
     f(&inputs).backward();
@@ -118,6 +142,7 @@ fn numeric_grads_agree_with_backward() {
     assert!(close(one_sided - e, 0.0136, 1e-3));
 }
 
+// @challenge 6
 #[test]
 fn a_number_used_three_times() {
     let x = Value::new(3.0);
@@ -137,6 +162,7 @@ fn a_number_used_three_times() {
     assert_eq!(x.grad(), 27.0);
 }
 
+// @challenge 7
 #[test]
 fn the_graph_as_dot() {
     let (a, b) = (Value::new(3.0), Value::new(-2.0));

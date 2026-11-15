@@ -1,6 +1,7 @@
 //! The examples printed in Chapter 21 of the guided edition: inverted dropout, its
 //! mask on the tape, training and evaluation modes, `evaluate`'s guard, the two
 //! classic mode bugs, and dropout narrowing the gap on a small spirals problem.
+// @listing header
 use ember::{
     Adam, DataLoader, Dropout, EvalMode, Module, Parameter, Rng, Sequential, Tape,
     Tensor, TensorDataset, evaluate, gradcheck, toy, toy::Labeled, train_step,
@@ -23,17 +24,17 @@ fn ones(n: usize) -> Tensor {
 }
 
 fn bits(model: &mut dyn Module) -> Vec<u32> {
-    let params = model.parameters();
-    params
-        .iter()
-        .flat_map(|p| p.value.to_vec())
-        .map(f32::to_bits)
-        .collect()
+    let mut all = vec![]; // every parameter value's bit pattern, in order
+    for p in model.parameters() {
+        all.extend(p.value.to_vec().into_iter().map(f32::to_bits));
+    }
+    all
 }
 
 fn mean(x: &Tensor) -> f32 {
     x.sum_all() / x.numel() as f32
 }
+// @end
 
 #[test]
 fn inverted_dropout_keeps_the_mean() {
@@ -68,6 +69,7 @@ fn the_mask_is_a_constant_on_the_tape() {
     let x_bar = loss.backward().get(x).unwrap().to_vec();
     assert_eq!(x_bar, [20., 0., 0., 0., 100., 120.]); // c ⊙ mask
     // @end
+    // @listing gradcheck-test
     // A random function fails a gradient check: every evaluation draws a new mask.
     let x = t(&[1., 2., 3., 4., 5., 6.], &[6]);
     let tol = ember::Tolerance::default();
@@ -78,6 +80,7 @@ fn the_mask_is_a_constant_on_the_tape() {
     let fixed =
         gradcheck(|xs| xs[0] * xs[0].tape().constant(mask.clone()), &[x], tol);
     assert!(fixed.is_ok());
+    // @end
 }
 
 #[test]
@@ -91,6 +94,7 @@ fn same_seed_same_masks() {
     // @end
 }
 
+// @listing probe
 /// A module without parameters that remembers the last mode it was given.
 struct Probe(Rc<Cell<bool>>);
 
@@ -104,7 +108,11 @@ impl Module for Probe {
     fn train(&mut self, on: bool) {
         self.0.set(on);
     }
+    fn is_training(&self) -> bool {
+        self.0.get()
+    }
 }
+// @end
 
 #[test]
 fn eval_mode_is_the_identity() {
@@ -118,10 +126,12 @@ fn eval_mode_is_the_identity() {
         (y, tape.len())
     };
     let (a, nodes) = run(&model);
-    assert!(a != run(&model).0 && nodes == 16); // a new mask each call
+    assert_ne!(a, run(&model).0); // a new mask each call
+    assert_eq!(nodes, 16);
     model.train(false); // Sequential passes it on to the Dropout
     let (a, nodes) = run(&model);
-    assert!(a == run(&model).0 && nodes == 14); // no mask, no product
+    assert_eq!(a, run(&model).0); // no mask, no product
+    assert_eq!(nodes, 14);
     model.train(true);
     assert_ne!(run(&model).0, a);
     // @end
@@ -143,7 +153,11 @@ fn evaluate_switches_and_restores() {
         assert!(!mode.get()); // evaluation mode inside
         let _ = guarded.forward(Tape::new().constant(Tensor::zeros(&[1, 2])));
     }
-    assert!(mode.get()); // training mode again
+    assert!(mode.get() && model.is_training()); // training mode again
+    model.train(false); // a caller that wants evaluation mode afterwards
+    evaluate(&mut model, &mut DataLoader::new(&ds, 10));
+    assert!(!mode.get() && !model.is_training()); // and keeps it
+    model.train(true);
     // @end
     let bad = TensorDataset::new(Tensor::zeros(&[4, 3]), vec![0; 4]); // 3 ≠ 2 inputs
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -152,11 +166,12 @@ fn evaluate_switches_and_restores() {
     assert!(result.is_err() && mode.get()); // restored while the panic unwound
 }
 
-/// Section 21.7's problem: 50 spiral points per arm to train on, 200 per arm to
-/// validate on, and a 2–16–16–2 ReLU network with dropout `p` after each hidden
-/// layer, trained for `steps` full-batch steps of Adam at 0.03.
-fn spirals_run(p: f32, steps: usize) -> (Sequential, Labeled, Labeled) {
-    let mut rng = Rng::new(21);
+// @listing spirals-run
+/// Section 21.7's problem, all from `Rng::new(seed)` in this order: 50 spiral
+/// points per arm to train on, 200 per arm to validate on, then a 2–16–16–2
+/// network with dropout `p`, trained for `steps` full-batch steps of Adam.
+fn spirals_run(seed: u64, p: f32, steps: usize) -> (Sequential, Labeled, Labeled) {
+    let mut rng = Rng::new(seed);
     let train = toy::spirals(50, 1.5, 0.05, &mut rng);
     let val = toy::spirals(200, 1.5, 0.05, &mut rng);
     let mut model = mlp_dropout(&[2, 16, 16, 2], p, &mut rng);
@@ -167,7 +182,7 @@ fn spirals_run(p: f32, steps: usize) -> (Sequential, Labeled, Labeled) {
     (model, train, val)
 }
 
-/// `evaluate` on a labeled set, rounded to 3 decimals.
+/// `evaluate` on a labeled set, as one batch, rounded to 3 decimals.
 fn measure(model: &mut Sequential, (x, labels): &Labeled) -> (f32, f32) {
     let ds = TensorDataset::new(x.clone(), labels.clone());
     let (loss, accuracy) = evaluate(model, &mut DataLoader::new(&ds, 400));
@@ -181,11 +196,12 @@ fn accuracy_as_is(model: &Sequential, (x, labels): &Labeled) -> f32 {
     let logits = model.forward(tape.constant(x.clone())).value();
     ember::accuracy(&logits, labels)
 }
+// @end
 
 #[test]
 fn the_gap_without_dropout() {
     // @listing gap-test
-    let (mut plain, train, val) = spirals_run(0.0, 300);
+    let (mut plain, train, val) = spirals_run(21, 0.0, 300);
     assert_eq!(measure(&mut plain, &train), (0.033, 0.99)); // (loss, accuracy)
     assert_eq!(measure(&mut plain, &val), (0.575, 0.92)); // loss gap 0.542
     // @end
@@ -194,7 +210,7 @@ fn the_gap_without_dropout() {
 #[test]
 fn dropout_narrows_the_gap() {
     // @listing dropout-gap-test
-    let (mut dropped, train, val) = spirals_run(0.1, 300);
+    let (mut dropped, train, val) = spirals_run(21, 0.1, 300);
     assert_eq!(measure(&mut dropped, &train), (0.12, 0.97));
     assert_eq!(measure(&mut dropped, &val), (0.284, 0.945)); // loss gap 0.164
     // @end
@@ -203,6 +219,42 @@ fn dropout_narrows_the_gap() {
     let b = accuracy_as_is(&dropped, &val);
     assert_eq!((a, b), (0.885, 0.8925)); // 354 and 357 of 400; evaluate: 378
     // @end
+}
+
+#[test]
+fn p_is_a_sharp_hyperparameter() {
+    // @listing p-test
+    for (p, train, val) in [
+        (0.2, (0.257, 0.89), (0.617, 0.77)),
+        (0.5, (0.438, 0.86), (0.574, 0.698)),
+    ] {
+        let (mut model, train_set, val_set) = spirals_run(21, p, 300);
+        assert_eq!(measure(&mut model, &train_set), train);
+        assert_eq!(measure(&mut model, &val_set), val);
+    }
+    // @end
+}
+
+#[test]
+fn one_seed_is_not_enough() {
+    // @listing seed-sweep-test
+    let val_loss = |seed, p| {
+        let (mut model, _, val) = spirals_run(seed, p, 300);
+        measure(&mut model, &val).0
+    };
+    let plain: Vec<f32> = (1..=5).map(|seed| val_loss(seed, 0.0)).collect();
+    let dropped: Vec<f32> = (1..=5).map(|seed| val_loss(seed, 0.1)).collect();
+    assert_eq!(plain, [0.878, 0.669, 0.267, 0.322, 0.474]); // seeds 1 to 5
+    assert_eq!(dropped, [0.612, 0.582, 0.279, 0.412, 0.587]); // two better
+    // @end
+}
+
+#[test]
+fn p_has_no_way_around_the_check() {
+    let drop = Dropout::new(0.25, 21);
+    assert_eq!(drop.p(), 0.25); // read-only: `p` is private, `new` checks it
+    assert!(std::panic::catch_unwind(|| Dropout::new(1.0, 21)).is_err());
+    assert!(std::panic::catch_unwind(|| Dropout::new(-0.5, 21)).is_err());
 }
 
 #[test]

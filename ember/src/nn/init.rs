@@ -18,7 +18,6 @@ pub fn uniform(shape: &[usize], bound: f32, rng: &mut Rng) -> Tensor {
 // @end
 
 // @listing init-std
-
 /// Glorot and Bengio (2010), for tanh: variance `2 / (fan_in + fan_out)`.
 pub fn xavier_std(fan_in: usize, fan_out: usize) -> f32 {
     (2.0 / (fan_in + fan_out) as f32).sqrt()

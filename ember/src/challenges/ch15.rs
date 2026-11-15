@@ -23,7 +23,9 @@ pub fn decay_groups(model: &mut dyn Module, lr: f32, weight_decay: f32) -> Sgd {
 // @end
 
 // @listing sign-sgd
-/// signSGD: every number moves by exactly `lr`, against the sign of its gradient.
+/// signSGD: every number moves by exactly `lr`, against the sign of its gradient
+/// (with the group's weight decay added to the gradient, as in `Sgd`).
+#[derive(Clone, Debug)]
 pub struct SignSgd {
     groups: Vec<ParamGroup>,
 }
@@ -42,11 +44,13 @@ impl SignSgd {
 impl Optimizer for SignSgd {
     fn step(&mut self, params: &mut [&mut Parameter]) {
         for p in params.iter_mut() {
-            let Some(g) = &p.grad else { continue };
-            let lr = ParamGroup::find(&self.groups, p.id()).lr;
-            let g = g.to_vec();
-            for (w, g) in p.value.data_mut().iter_mut().zip(g) {
-                *w -= lr * if g == 0.0 { 0.0 } else { g.signum() };
+            let Some(grad) = &p.grad else { continue };
+            let group = ParamGroup::find(&self.groups, p.id());
+            let (lr, wd) = (group.lr, group.weight_decay);
+            let g = grad.as_slice().expect("SignSgd: a contiguous gradient");
+            for (w, &gi) in p.value.data_mut().iter_mut().zip(g) {
+                let d = gi + wd * *w; // the sign of the decayed gradient
+                *w -= lr * if d == 0.0 { 0.0 } else { d.signum() };
             }
         }
     }
@@ -61,6 +65,7 @@ impl Optimizer for SignSgd {
 
 // @listing max-norm
 /// Any optimizer, then each column of a weight matrix scaled down to length `max`.
+#[derive(Clone, Debug)]
 pub struct MaxNorm<O: Optimizer> {
     pub inner: O,
     pub max: f32,
@@ -69,7 +74,9 @@ pub struct MaxNorm<O: Optimizer> {
 impl<O: Optimizer> Optimizer for MaxNorm<O> {
     fn step(&mut self, params: &mut [&mut Parameter]) {
         self.inner.step(params);
-        for p in params.iter_mut().filter(|p| p.value.ndim() == 2) {
+        // A parameter the inner step skipped (no gradient) is left alone too.
+        let matrices = params.iter_mut().filter(|p| p.value.ndim() == 2);
+        for p in matrices.filter(|p| p.grad.is_some()) {
             let cols = p.value.shape()[1];
             let w = p.value.data_mut(); // row-major [in, out]
             for j in 0..cols {

@@ -7,18 +7,21 @@ use std::{fmt, io};
 
 // @listing error
 /// Everything that can go wrong while loading a dataset from files: a file that
-/// can't be read, a magic number or a size that is not the expected one, a label
-/// that is not a digit, and image and label files of different lengths.
+/// can't be read, a magic number or a size that is not the expected one, a file
+/// too short for its header, a label that is not a digit, and image and label
+/// files of different lengths.
 #[derive(Debug)]
 pub enum DataError {
     Io { path: PathBuf, source: io::Error },
     BadMagic { expected: u32, found: u32 },
     WrongSize { expected: usize, found: usize },
+    Truncated { found: usize, header: usize },
     BadLabel { index: usize, label: u8 },
     Mismatch { images: usize, labels: usize },
 }
 // @end
 
+// @listing display
 impl fmt::Display for DataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use DataError::*;
@@ -29,6 +32,9 @@ impl fmt::Display for DataError {
             }
             WrongSize { expected, found } => {
                 write!(f, "{found} bytes, but the header says {expected}")
+            }
+            Truncated { found, header } => {
+                write!(f, "{found} bytes, shorter than the header's {header}")
             }
             BadLabel { index, label } => write!(f, "label {index} is {label}"),
             Mismatch { images, labels } => {
@@ -46,30 +52,43 @@ impl std::error::Error for DataError {
         }
     }
 }
-
-/// An IDX file's sizes, and its data.
-pub type Idx<'a> = (Vec<usize>, &'a [u8]);
+// @end
 
 // @listing parse-idx
-/// An IDX file of unsigned bytes with `ndim` dimensions, its data borrowed from
-/// `bytes`. The header is the magic number `0x0000_08nn` (type 0x08, unsigned
-/// byte; nn dimensions), then each size, all big-endian `u32`s.
+/// An IDX file's sizes, and its data borrowed from the file's bytes.
+pub struct Idx<'a> {
+    pub dims: Vec<usize>,
+    pub data: &'a [u8],
+}
+
+/// An IDX file of unsigned bytes with `ndim` dimensions. The header is the magic
+/// number `0x0000_08nn` (type 0x08, unsigned byte; nn dimensions), then each
+/// size, all big-endian `u32`s.
 pub fn parse_idx(bytes: &[u8], ndim: usize) -> Result<Idx<'_>, DataError> {
-    let word = |k: usize| match bytes.get(4 * k..4 * k + 4) {
-        Some(four) => u32::from_be_bytes(four.try_into().unwrap()),
-        None => 0, // past the end: the size check below reports it
+    let (len, header) = (bytes.len(), 4 * (1 + ndim));
+    let short = || DataError::Truncated { found: len, header };
+    // Word k of the header, or `None` past the end of a short file.
+    let word = |k: usize| {
+        let four = bytes.get(4 * k..)?.first_chunk()?; // a `&[u8; 4]`
+        Some(u32::from_be_bytes(*four))
     };
-    let (expected, found) = (0x0800 | ndim as u32, word(0));
+    let (expected, found) = (0x0800 | ndim as u32, word(0).ok_or_else(short)?);
     if found != expected {
         return Err(DataError::BadMagic { expected, found });
     }
-    let dims: Vec<usize> = (1..=ndim).map(|k| word(k) as usize).collect();
-    let header = 4 * (1 + ndim);
-    let (expected, found) = (header + dims.iter().product::<usize>(), bytes.len());
+    if len < header {
+        return Err(short());
+    }
+    let dims: Vec<usize> = (1..=ndim).flat_map(word).map(|d| d as usize).collect();
+    // A corrupt header can claim more bytes than a usize holds; no file has them.
+    let body = dims.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+    let expected = body.and_then(|n| n.checked_add(header));
+    let (expected, found) = (expected.unwrap_or(usize::MAX), len);
     if found != expected {
         return Err(DataError::WrongSize { expected, found });
     }
-    Ok((dims, &bytes[header..]))
+    let data = &bytes[header..];
+    Ok(Idx { dims, data })
 }
 // @end
 
@@ -81,14 +100,14 @@ pub const MNIST_STD: f32 = 0.3081;
 // @listing images
 /// An images file as rows of `[n, rows · cols]`, each pixel scaled to [0, 1].
 pub fn mnist_images(bytes: &[u8]) -> Result<Tensor, DataError> {
-    let (dims, pixels) = parse_idx(bytes, 3)?;
-    let x = pixels.iter().map(|&p| p as f32 / 255.0).collect();
+    let Idx { dims, data } = parse_idx(bytes, 3)?;
+    let x = data.iter().map(|&p| p as f32 / 255.0).collect();
     Ok(Tensor::from_vec(x, &[dims[0], dims[1] * dims[2]]))
 }
 
 /// A labels file, each label checked to be a digit.
 pub fn mnist_labels(bytes: &[u8]) -> Result<Vec<usize>, DataError> {
-    let (_, labels) = parse_idx(bytes, 1)?;
+    let labels = parse_idx(bytes, 1)?.data;
     if let Some(index) = labels.iter().position(|&l| l > 9) {
         let label = labels[index];
         return Err(DataError::BadLabel { index, label });
@@ -96,9 +115,9 @@ pub fn mnist_labels(bytes: &[u8]) -> Result<Vec<usize>, DataError> {
     Ok(labels.iter().map(|&l| l as usize).collect())
 }
 
-/// `(x − mean) / std`, elementwise.
-pub fn normalize(x: &Tensor, mean: f32, std: f32) -> Tensor {
-    x.map(|v| (v - mean) / std)
+/// `(x − mean) / std_dev`, elementwise.
+pub fn normalize(x: &Tensor, mean: f32, std_dev: f32) -> Tensor {
+    x.map(|v| (v - mean) / std_dev)
 }
 // @end
 

@@ -32,9 +32,9 @@ pub fn broadcast_axes(from: &[usize], to: &[usize]) -> Vec<usize> {
 /// For each element of the shape `a` and `b` broadcast to, in row-major order, the
 /// storage slots it reads in `a` and in `b`. One odometer drives both positions.
 pub fn zip_slots(a: &Tensor, b: &Tensor) -> Vec<(usize, usize)> {
-    let shape = broadcast_shapes(&a.shape, &b.shape).unwrap_or_else(|| {
+    let Some(shape) = broadcast_shapes(&a.shape, &b.shape) else {
         panic!("zip_slots: {:?} and {:?} don't broadcast", a.shape, b.shape)
-    });
+    };
     let (a, b) = (a.expand(&shape), b.expand(&shape));
     let numel: usize = shape.iter().product();
     let mut out = Vec::with_capacity(numel);
@@ -84,10 +84,12 @@ impl Tensor {
         shape.extend_from_slice(&self.shape);
         // [a, b] becomes [1, a, 1, b], stretched to [c0, a, c1, b], copied, and
         // regrouped as [c0 * a, c1 * b].
-        let pairs = shape.iter().zip(counts);
-        let split: Vec<usize> = shape.iter().flat_map(|&n| [1, n]).collect();
-        let tiled: Vec<usize> = pairs.clone().flat_map(|(&n, &c)| [c, n]).collect();
-        let out: Vec<usize> = pairs.map(|(&n, &c)| n * c).collect();
+        let (mut split, mut tiled, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        for (&n, &c) in shape.iter().zip(counts) {
+            split.extend([1, n]);
+            tiled.extend([c, n]);
+            out.push(n * c);
+        }
         let copy = self.reshape(&split).expand(&tiled).contiguous();
         copy.reshape(&out)
     }

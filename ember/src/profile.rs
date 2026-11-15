@@ -8,11 +8,20 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 // @listing profile
-/// The time charged to each operation: `(phase, op, calls, total)`, in the
-/// order the operations were first seen.
+/// The time charged to each operation, one row per `(phase, op)`, in the order
+/// the operations were first seen.
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
-    pub rows: Vec<(&'static str, &'static str, usize, Duration)>,
+    pub rows: Vec<Row>,
+}
+
+/// One operation in one phase: how many marks charged it, and how much time.
+#[derive(Clone, Copy, Debug)]
+pub struct Row {
+    pub phase: &'static str,
+    pub op: &'static str,
+    pub calls: usize,
+    pub time: Duration,
 }
 
 /// The running stopwatch: the profile so far, and when it was last read.
@@ -25,12 +34,13 @@ thread_local! {
     static STOPWATCH: RefCell<Option<Stopwatch>> = const { RefCell::new(None) };
 }
 
-/// Run `f` with the stopwatch on, and return its result and the profile.
+/// Run `f` with the stopwatch on, and return its result and the profile. A
+/// profile inside `f` takes over the marks until it returns.
 pub fn profile<R>(f: impl FnOnce() -> R) -> (R, Profile) {
     let (profile, last) = (Profile::default(), Instant::now());
-    STOPWATCH.set(Some(Stopwatch { profile, last }));
+    let outer = STOPWATCH.replace(Some(Stopwatch { profile, last }));
     let result = f();
-    let watch = STOPWATCH.take().expect("profile: the stopwatch is gone");
+    let watch = STOPWATCH.replace(outer).expect("profile: no stopwatch");
     (result, watch.profile)
 }
 
@@ -47,32 +57,58 @@ pub fn mark(phase: &'static str, op: &'static str) {
 }
 // @end
 
+// @listing rows
 impl Profile {
     /// Add one call of `op` in `phase`, taking `time`.
     pub fn add(&mut self, phase: &'static str, op: &'static str, time: Duration) {
-        match self.rows.iter_mut().find(|r| (r.0, r.1) == (phase, op)) {
-            Some(row) => (row.2, row.3) = (row.2 + 1, row.3 + time),
-            None => self.rows.push((phase, op, 1, time)),
+        match self
+            .rows
+            .iter_mut()
+            .find(|r| (r.phase, r.op) == (phase, op))
+        {
+            Some(row) => (row.calls, row.time) = (row.calls + 1, row.time + time),
+            None => self.rows.push(Row {
+                phase,
+                op,
+                calls: 1,
+                time,
+            }),
         }
+    }
+
+    /// The calls of `op` in `phase` (0 if it wasn't seen).
+    pub fn calls(&self, phase: &str, op: &str) -> usize {
+        let row = self.rows.iter().find(|r| (r.phase, r.op) == (phase, op));
+        row.map_or(0, |r| r.calls)
     }
 
     /// The time charged to `phase`, or to everything for `None`.
     pub fn total(&self, phase: Option<&str>) -> Duration {
         let rows = self.rows.iter();
-        let rows = rows.filter(|r| phase.is_none_or(|p| p == r.0));
-        rows.map(|r| r.3).sum()
+        let rows = rows.filter(|r| phase.is_none_or(|p| p == r.phase));
+        rows.map(|r| r.time).sum()
     }
+}
+// @end
 
+impl Profile {
     /// The time of `op` in `phase`, if it was seen.
     pub fn time(&self, phase: &str, op: &str) -> Option<Duration> {
-        let row = self.rows.iter().find(|r| (r.0, r.1) == (phase, op));
-        row.map(|r| r.3)
+        let row = self.rows.iter().find(|r| (r.phase, r.op) == (phase, op));
+        row.map(|r| r.time)
     }
 
-    /// The calls of `op` in `phase` (0 if it wasn't seen).
-    pub fn calls(&self, phase: &str, op: &str) -> usize {
-        let row = self.rows.iter().find(|r| (r.0, r.1) == (phase, op));
-        row.map_or(0, |r| r.2)
+    /// Every time and count divided by `n`: per step, for a profile of `n` steps.
+    /// `n` is a `u32` because that is what a `Duration` divides by.
+    pub fn per(&self, n: u32) -> Profile {
+        let per = |r: &Row| Row {
+            calls: r.calls / n as usize,
+            time: r.time / n,
+            ..*r
+        };
+        Profile {
+            rows: self.rows.iter().map(per).collect(),
+        }
     }
 }
 
@@ -83,24 +119,37 @@ impl fmt::Display for Profile {
         let us = |t: Duration| t.as_secs_f64() * 1e6;
         let total = us(self.total(None)).max(1e-9);
         let mut rows = self.rows.clone();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.3));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.time));
         writeln!(f, "phase     op                 calls         µs      %")?;
-        for (phase, op, calls, time) in rows {
-            let share = 100.0 * us(time) / total;
-            let t = us(time);
+        for Row {
+            phase,
+            op,
+            calls,
+            time,
+        } in rows
+        {
+            let (t, share) = (us(time), 100.0 * us(time) / total);
             writeln!(f, "{phase:<9} {op:<16} {calls:>7} {t:>10.1} {share:>6.1}")?;
         }
         write!(f, "total {total:>45.1}")
     }
 }
 
-impl Profile {
-    /// Every time and count divided by `n`: per step, for a profile of `n`.
-    pub fn per(&self, n: u32) -> Profile {
-        let row =
-            |&(p, o, c, t): &(_, _, usize, Duration)| (p, o, c / n as usize, t / n);
-        Profile {
-            rows: self.rows.iter().map(row).collect(),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A profile inside a profile takes the marks while it runs, and the outer
+    /// one gets them back afterwards.
+    #[test]
+    fn profiles_nest() {
+        let ((), outer) = profile(|| {
+            mark("a", "before");
+            let ((), inner) = profile(|| mark("b", "inside"));
+            assert_eq!((inner.calls("b", "inside"), inner.rows.len()), (1, 1));
+            mark("a", "after");
+        });
+        assert_eq!(outer.calls("a", "before") + outer.calls("a", "after"), 2);
+        assert_eq!(outer.calls("b", "inside"), 0);
     }
 }

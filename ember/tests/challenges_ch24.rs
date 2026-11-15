@@ -1,14 +1,12 @@
 //! Tests for the challenges of Chapter 24.
-use ember::{
-    Batch, DataLoader, Rng, Tensor, TensorDataset, Window, im2col_parallel,
-    matmul_blocked, matmul_stacks, par_map, prefetched_epoch,
-};
+use ember::{Batch, DataLoader, Rng, Tensor, TensorDataset, Window, matmul_blocked};
 
 /// Every number of `t`, as bits, so that comparisons are exact.
 fn bits(t: &Tensor) -> Vec<u32> {
     t.to_vec().iter().map(|v| v.to_bits()).collect()
 }
 
+// @challenge 1
 #[test]
 fn predict_step_flops_and_amdahl() {
     // @listing predict-test
@@ -18,13 +16,16 @@ fn predict_step_flops_and_amdahl() {
     assert_eq!((forward, backward), (13_008_896, 13_172_736));
     let ms = (forward + backward) as f64 / 64e9 * 1e3; // at 64 GFLOP/s
     assert_eq!((ms * 1000.0).round() / 1000.0, 0.409);
-    let p = 540.3 / 657.6; // the products' share after Section 24.4
+    let p = 545.2 / 670.2; // the products' share after Section 24.4
     let amdahl = |s: f64| 1.0 / ((1.0 - p) + p / s);
     let r = |x: f64| (x * 100.0).round() / 100.0;
-    assert_eq!((r(p), r(amdahl(6.0))), (0.82, 3.17));
-    assert_eq!(r(amdahl(f64::INFINITY)), 5.61);
+    assert_eq!((r(p), r(amdahl(6.0))), (0.81, 3.10));
+    assert_eq!(r(amdahl(f64::INFINITY)), 5.36);
     // @end
 }
+
+// @challenge 2
+use ember::par_map;
 
 #[test]
 fn par_map_matches_map() {
@@ -43,6 +44,7 @@ fn par_map_matches_map() {
     // @end
 }
 
+// @challenge 3
 #[test]
 fn transposed_product_without_a_copy() {
     // @listing tn-test
@@ -55,6 +57,9 @@ fn transposed_product_without_a_copy() {
     assert_eq!(x.matmul_tn(&x).to_vec()[..3], [9.0, 12.0, 15.0]);
     // @end
 }
+
+// @challenge 4
+use ember::im2col_parallel;
 
 #[test]
 fn parallel_im2col_is_im2col() {
@@ -72,6 +77,17 @@ fn parallel_im2col_is_im2col() {
 }
 
 #[test]
+fn parallel_im2col_of_no_images() {
+    let x = Tensor::zeros(&[0, 2, 4, 4]);
+    let win = Window::new(3, 1, 1);
+    let m = im2col_parallel(&x, win, 4);
+    assert_eq!(m.shape(), x.im2col(win).shape());
+}
+
+// @challenge 5
+use ember::matmul_stacks;
+
+#[test]
 fn stacks_on_threads() {
     // @listing stacks-test
     let (batch, m, k, n) = (7, 5, 6, 9);
@@ -84,11 +100,20 @@ fn stacks_on_threads() {
     }
     for threads in 1..=8 {
         let mut c = vec![0.0; batch * m * n];
-        matmul_stacks(&a, &b, &mut c, (batch, (m, k, n)), threads);
+        matmul_stacks(&a, &b, &mut c, batch, (m, k, n), threads);
         assert!(c.iter().zip(&one).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
     // @end
 }
+
+#[test]
+fn an_empty_stack() {
+    let mut c: Vec<f32> = vec![];
+    matmul_stacks(&[], &[], &mut c, 0, (2, 3, 4), 4); // used to panic in chunks(0)
+}
+
+// @challenge 6
+use ember::prefetched_epoch;
 
 #[test]
 fn prefetched_batches_match_the_loader() {
@@ -104,5 +129,32 @@ fn prefetched_batches_match_the_loader() {
     for ((x1, y1), (x2, y2)) in served.iter().zip(&fetched) {
         assert_eq!((bits(x1), y1, x1.shape()), (bits(x2), y2, x2.shape()));
     }
+    // @end
+}
+
+#[test]
+fn prefetching_no_examples() {
+    let ds = TensorDataset::new(Tensor::zeros(&[0, 6]), vec![]);
+    let mut batches = 0;
+    prefetched_epoch(&ds, 8, &mut Rng::new(7), |_| batches += 1);
+    assert_eq!(batches, 0);
+}
+
+// @challenge 7
+use ember::Pool;
+
+#[test]
+fn pool_reuses_buffers() {
+    // @listing pool-test
+    let mut pool = Pool::default();
+    let mut a = pool.take(1000);
+    a[3] = 7.0;
+    let at = a.as_ptr();
+    pool.give(a);
+    assert_eq!(pool.held(), 1);
+    let b = pool.take(1000); // the same buffer, zeroed again
+    assert_eq!((b.as_ptr(), b.iter().all(|&v| v == 0.0)), (at, true));
+    let c = pool.take(500); // no buffer of that length: a new one
+    assert_eq!((c.len(), pool.held()), (500, 0));
     // @end
 }

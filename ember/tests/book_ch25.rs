@@ -162,11 +162,21 @@ fn why_divide_by_root_d() {
         (64, 8.018, 0.8435, 463),
         (256, 15.980, 0.9202, 898),
     ];
-    for (d, std, top, peaked) in raw {
+    // and divided by √d: (standard deviation, mean largest weight), no row over 0.99
+    let scaled = [
+        (1.003, 0.2179),
+        (1.009, 0.2454),
+        (1.002, 0.2441),
+        (0.999, 0.2481),
+    ];
+    for ((d, std, top, peaked), (std_s, top_s)) in raw.into_iter().zip(scaled) {
         let (s, m, p) = peaks(d, false);
         assert!(close(&[s, m], &[std, top], 1e-3) && p == peaked, "d {d}");
-        let (s, m, p) = peaks(d, true); // divided by √d
-        assert!((s - 1.0).abs() < 0.01 && (0.21..0.25).contains(&m) && p == 0);
+        let (s, m, p) = peaks(d, true);
+        assert!(
+            close(&[s, m], &[std_s, top_s], 1e-3) && p == 0,
+            "d {d} scaled"
+        );
     }
 }
 
@@ -295,6 +305,96 @@ fn a_short_run() {
     let at = [losses[0], losses[9], losses[19], losses[29]];
     assert!(close(&at, &[2.4639, 1.9790, 1.6326, 1.5244], 1e-4));
     // @end
-    sorter.train(false);
-    assert_eq!(greedy(&sorter.model, &[3, 1, 2, 0]), [0, 1, 2, 2]); // not yet
+    assert_eq!(greedy(&mut sorter.model, &[3, 1, 2, 0]), [0, 1, 2, 2]); // not yet
+}
+
+#[test]
+fn greedy_switches_to_evaluation() {
+    // In training mode, half the features dropped, every forward pass differs.
+    // `greedy` switches dropout off, so it writes the same digits every time, and
+    // the model is back in its earlier mode afterwards (2 nodes per dropout layer).
+    let mut model = TinyTransformer::new(config(4, 0.5), &mut Rng::new(25));
+    let first = greedy(&mut model, &[3, 1, 2, 0]);
+    for _ in 0..4 {
+        assert_eq!(greedy(&mut model, &[3, 1, 2, 0]), first);
+    }
+    let ids = sort_batch(4, 1, &mut Rng::new(1)).0;
+    let nodes = |model: &TinyTransformer| {
+        let tape = Tape::new();
+        model.forward(tape.constant(ids.clone()));
+        tape.len()
+    };
+    let training = nodes(&model);
+    model.train(false);
+    assert_eq!(training, nodes(&model) + 8); // 2 blocks, 2 dropout layers each
+    greedy(&mut model, &[3, 1, 2, 0]);
+    assert!(!model.is_training()); // evaluation mode stays evaluation mode
+}
+
+#[test]
+fn training_sequences_rarely_repeat() {
+    // `train`'s draws from seed 25: the model first, then 1,000 batches of 64.
+    let mut rng = Rng::new(25);
+    TinyTransformer::new(config(8, 0.1), &mut rng);
+    let mut seen = std::collections::HashSet::new();
+    let mut repeats = 0;
+    for _ in 0..1000 {
+        let ids = sort_batch(8, 64, &mut rng).0.to_vec();
+        for row in ids.chunks(15) {
+            let digits: Vec<u32> = row[..8].iter().map(|&d| d as u32).collect();
+            repeats += !seen.insert(digits) as usize;
+        }
+    }
+    assert_eq!(repeats, 23); // of 64,000, from 10⁸ possible sequences
+    // The example's 1,000 test sequences, from `Rng::new(2025)`: how many were
+    // also training sequences (0.64 expected)?
+    let mut rng = Rng::new(2025);
+    let mut seen_in_training = 0;
+    for _ in 0..1000 {
+        let digits: Vec<u32> = (0..8).map(|_| rng.below(10) as u32).collect();
+        seen_in_training += seen.contains(&digits) as usize;
+    }
+    assert_eq!(seen_in_training, 0);
+}
+
+#[test]
+fn causal_attention_sees_order() {
+    // Unmasked attention is permutation-equivariant: shuffle the positions and
+    // the outputs shuffle with them. Causal attention is not, because position i
+    // reads i + 1 positions.
+    let x = Tensor::randn(&[1, 4, 3], &mut Rng::new(25));
+    let order = [2, 0, 3, 1];
+    let shuffle = |y: &Tensor| {
+        let rows: Vec<Tensor> = order.iter().map(|&i| y.select(1, i)).collect();
+        rows.iter().flat_map(|r| r.to_vec()).collect::<Vec<f32>>()
+    };
+    let shuffled = t(&shuffle(&x), &[1, 4, 3]);
+    let tape = Tape::new();
+    for causal in [false, true] {
+        let run = |x: &Tensor| {
+            let x = tape.constant(x.clone());
+            attention(x, x, x, causal).value()
+        };
+        let (before, after) = (shuffle(&run(&x)), run(&shuffled).to_vec());
+        let gap = before.iter().zip(&after).map(|(a, b)| (a - b).abs());
+        let gap = gap.fold(0.0f32, f32::max);
+        assert_eq!(gap < 1e-6, !causal, "causal {causal}: {gap}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "causal needs as many keys as queries")]
+fn a_causal_mask_needs_square_scores() {
+    let tape = Tape::new();
+    let q = tape.constant(Tensor::zeros(&[1, 1, 2])); // one query, three keys
+    let k = tape.constant(Tensor::zeros(&[1, 3, 2]));
+    attention_weights(q, k, true);
+}
+
+#[test]
+#[should_panic(expected = "TinyTransformer: 16 positions, context 15")]
+fn a_sequence_longer_than_the_context() {
+    let model = TinyTransformer::new(config(8, 0.1), &mut Rng::new(25));
+    let tape = Tape::new();
+    model.forward(tape.constant(Tensor::zeros(&[1, 16])));
 }

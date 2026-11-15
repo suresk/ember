@@ -37,9 +37,8 @@ pub fn write_state(out: &mut impl Write, state: &StateDict) -> io::Result<()> {
         for &d in t.shape() {
             put(out, d)?;
         }
-        for x in t.to_vec() {
-            out.write_all(&x.to_le_bytes())?;
-        }
+        let data = t.to_vec().into_iter().flat_map(f32::to_le_bytes);
+        out.write_all(&data.collect::<Vec<u8>>())?; // one write per tensor
     }
     Ok(())
 }
@@ -59,23 +58,31 @@ pub fn to_bytes(state: &StateDict) -> Vec<u8> {
 }
 
 // @listing save
-/// Write `state` to `path`, through a temporary file that is renamed over
-/// `path` only when complete, so a crash never leaves half a checkpoint.
+/// Write `state` to `path` through a temporary file, synced and then renamed
+/// over `path`: a crash leaves the old file or the new one, never half of one.
 pub fn save(
     path: impl AsRef<Path>,
     state: &StateDict,
 ) -> Result<(), CheckpointError> {
     let path = path.as_ref();
-    let partial = path.with_extension("partial");
+    let partial = path.with_extension("partial"); // best.embr: best.partial
     let io = |source| CheckpointError::Io {
         path: path.to_path_buf(),
         source,
     };
-    let mut out = BufWriter::new(File::create(&partial).map_err(io)?);
-    write_state(&mut out, state).map_err(io)?;
-    out.flush().map_err(io)?; // BufWriter's last bytes, or their error
-    drop(out);
+    if let Err(e) = write_synced(&partial, state) {
+        let _ = fs::remove_file(&partial); // a full disk leaves no partial file
+        return Err(io(e));
+    }
     fs::rename(&partial, path).map_err(io)
+}
+
+/// Write `state` to a new file at `path` and wait until it is on disk.
+fn write_synced(path: &Path, state: &StateDict) -> io::Result<()> {
+    let mut out = BufWriter::new(File::create(path)?);
+    write_state(&mut out, state)?;
+    let file = out.into_inner().map_err(|e| e.into_error())?; // flushes
+    file.sync_all() // fsync: the bytes are on disk before the rename
 }
 // @end
 
@@ -89,7 +96,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<StateDict, CheckpointError> {
     read_state(&bytes)
 }
 
-// @listing cursor
+// @listing read
 /// A position in a checkpoint's bytes; every read checks the length first.
 struct Cursor<'b> {
     bytes: &'b [u8],
@@ -115,9 +122,7 @@ impl<'b> Cursor<'b> {
 fn corrupt(at: usize, what: &'static str) -> CheckpointError {
     CheckpointError::Corrupt { at, what }
 }
-// @end
 
-// @listing read
 /// Parse a checkpoint's bytes.
 pub fn read_state(bytes: &[u8]) -> Result<StateDict, CheckpointError> {
     if !bytes.starts_with(MAGIC) {
@@ -139,10 +144,10 @@ pub fn read_state(bytes: &[u8]) -> Result<StateDict, CheckpointError> {
             return Err(corrupt(at, "a name used twice"));
         }
     }
-    match c.at == bytes.len() {
-        true => Ok(state),
-        false => Err(corrupt(c.at, "bytes after the last tensor")),
+    if c.at != bytes.len() {
+        return Err(corrupt(c.at, "bytes after the last tensor"));
     }
+    Ok(state)
 }
 // @end
 
@@ -154,7 +159,7 @@ fn read_tensor(c: &mut Cursor) -> Result<Tensor, CheckpointError> {
     let shape: Vec<usize> = (0..ndim).map(|_| c.u32()).collect::<Result<_, _>>()?;
     let at = c.at;
     let size = shape.iter().try_fold(4usize, |n, &d| n.checked_mul(d));
-    let size = size.ok_or(corrupt(at, "dims too large"))?;
+    let size = size.ok_or_else(|| corrupt(at, "dims too large"))?;
     let (words, _) = c.take(size)?.as_chunks::<4>(); // [u8; 4]s, no rest
     let values = words.iter().map(|&w| f32::from_le_bytes(w));
     Ok(Tensor::from_vec(values.collect(), &shape))

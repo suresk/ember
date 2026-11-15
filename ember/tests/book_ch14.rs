@@ -1,10 +1,10 @@
 //! The examples printed in Chapter 14 of the guided edition: training an MLP end to
 //! end, on XOR and on two spirals.
-#![allow(clippy::approx_constant)] // ln 2 to four places
 use ember::{
     Linear, Module, Rng, Sequential, Tanh, Tape, Tensor, Tolerance, cross_entropy,
     gradcheck, plot, toy,
 };
+use std::f32::consts::LN_2;
 
 // The examples are compiled into this test as modules, so the tests run the code
 // the chapter prints. Their `main` functions go unused here.
@@ -85,30 +85,26 @@ fn learning_rates_on_xor() {
             .collect()
     };
     let (slow, good, fast, spiky) = (run(0.01), run(0.1), run(0.3), run(0.5));
-    // @end
     let at = |l: &[f32]| [l[9], l[99]]; // steps 10 and 100
-    let peak = |l: &[f32]| (0..500).max_by(|&a, &b| l[a].total_cmp(&l[b])).unwrap();
-    assert!(close(&at(&slow), &[0.4189, 0.2411], 1e-4));
-    assert!(close(&at(&good), &[0.2413, 0.2106], 1e-4));
-    assert!(close(&at(&fast), &[0.2359, 0.0142], 1e-4));
-    assert!(close(&at(&spiky), &[0.2385, 0.1046], 1e-4));
+    let table = [at(&slow), at(&good), at(&fast), at(&spiky)].concat();
+    let want = [
+        0.4189, 0.2411, 0.2413, 0.2106, 0.2359, 0.0142, 0.2385, 0.1046,
+    ];
+    assert!(close(&table, &want, 1e-4));
     assert!((slow[499] - 0.2297).abs() < 1e-4 && good[499] < 1e-5);
     assert!(fast[499] < 1e-13 && spiky[499] < 1e-7);
-    assert_eq!(
-        [&slow, &good, &fast, &spiky].map(|l| peak(l)),
-        [0, 0, 127, 66]
-    );
-    assert!(close(
-        &[slow[0], fast[127], spiky[66]],
-        &[0.6197, 1.5970, 2.3263],
-        1e-4
-    ));
+    let peak = |l: &[f32]| (0..500).max_by(|&a, &b| l[a].total_cmp(&l[b])).unwrap();
+    let peaks = [&slow, &good, &fast, &spiky].map(|l| peak(l));
+    assert_eq!(peaks, [0, 0, 127, 66]); // steps 1, 1, 128 and 67
+    let highs = [slow[0], fast[127], spiky[66]];
+    assert!(close(&highs, &[0.6197, 1.5970, 2.3263], 1e-4));
     let wild = run(1.0);
     let first = [0.6197, 3.7378, 1.3915, 43.3998, 65.0059, 3349.0];
-    assert!(
-        close(&wild[..6], &first, 1e-3) && (wild[9] / 1.8612e10 - 1.0).abs() < 1e-4
-    );
-    assert!(wild[24] == f32::INFINITY && wild[99].is_nan());
+    assert!(close(&wild[..6], &first, 1e-3));
+    assert!((wild[9] / 1.8612e10 - 1.0).abs() < 1e-4); // step 10
+    assert!((10..24).all(|i| (wild[i] / wild[i - 1] - 81.0).abs() < 0.01));
+    assert!(wild[24] == f32::INFINITY && wild[99].is_nan()); // steps 25 and 100
+    // @end
 }
 
 #[test]
@@ -141,9 +137,9 @@ fn the_first_loss_is_ln_2() {
     let tape = Tape::new();
     let logits = model.forward(tape.constant(train.0.clone()));
     let loss = cross_entropy(logits, &train.1);
-    assert_eq!(tape.len(), 22); // 1 + 3 · 6 + 2 + 1
+    assert_eq!(tape.len(), 22);
     assert!((loss.value().item() - 0.6965).abs() < 1e-4);
-    assert!((2f32.ln() - 0.6931).abs() < 1e-4); // ln C, for C = 2 classes
+    assert!((loss.value().item() - LN_2).abs() < 0.004); // ln C = 0.6931, C = 2
     // @end
 }
 
@@ -219,6 +215,9 @@ fn text_plots() {
         "         0       8",
     ];
     assert_eq!(curve.lines().collect::<Vec<_>>(), want);
+    // The labels are column means: 0.9 and 0.1 share a column, so the top is 0.5.
+    let means = plot::curve(&[0.9, 0.1, 0.2, 0.2], 2, 2);
+    assert!(means.starts_with("  0.5000 |* \n  0.2000 | *"));
     // @listing plots
     let points = Tensor::from_vec(vec![0.5, 0.5, -0.5, -0.5, 0.6, -0.6], &[3, 2]);
     let right = |grid: &Tensor| {
@@ -230,4 +229,35 @@ fn text_plots() {
     let want = ["....    ", "....  x ", "....    ", "..o.  o "];
     assert_eq!(map.lines().collect::<Vec<_>>(), want);
     // @end
+}
+
+#[test]
+fn a_curve_that_reaches_zero() {
+    // A zero (or infinite, or NaN) column has no log: it is left blank, and the
+    // other columns still span the rows.
+    let curve = plot::curve(&[0.8, 0.4, 0.2, 0.0], 4, 4);
+    let want = [
+        "  0.8000 |*   ",
+        "         |    ",
+        "         | *  ",
+        "  0.2000 |  * ",
+        "         +----",
+        "         0   4",
+    ];
+    assert_eq!(curve.lines().collect::<Vec<_>>(), want);
+    let diverged = plot::curve(&[0.6, 3.7, f32::INFINITY, f32::NAN], 4, 2);
+    assert!(diverged.starts_with("  3.7000 | *  \n  0.6000 |*   "));
+}
+
+#[test]
+fn the_first_loss_ignores_the_labels() {
+    // An untrained network's outputs carry nothing about the labels, so flipping
+    // every label barely moves the first loss: ln C can't catch wrong labels.
+    let mut rng = Rng::new(14);
+    let ((x, labels), _) = spirals::data(&mut rng);
+    let model = spirals::mlp(16, &mut rng);
+    let flipped: Vec<usize> = labels.iter().map(|&c| 1 - c).collect();
+    let first = |labels: Vec<usize>| spirals::loss(&model, &(x.clone(), labels));
+    assert!((first(labels.clone()) - 0.6965).abs() < 1e-4);
+    assert!((first(flipped) - 0.6998).abs() < 1e-4);
 }

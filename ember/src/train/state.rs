@@ -15,13 +15,18 @@ use CheckpointError as Error; // in this file
 /// same bytes every time.
 pub type StateDict = BTreeMap<String, Tensor>;
 
-/// Every parameter's value, and every buffer, by its dotted name. The tensors
-/// share their buffers with the parameters until an update writes to them.
+/// Every parameter's value by its dotted name. The tensors share their buffers
+/// with the parameters until an update writes to them.
 pub fn state_dict(model: &mut dyn Module) -> StateDict {
-    let named = model.named_parameters().into_iter();
-    let mut state: StateDict = named.map(|(n, p)| (n, p.value.clone())).collect();
-    let buffers = model.named_buffers().into_iter(); // Chapter 23
-    state.extend(buffers.map(|(n, t)| (n, t.clone())));
+    let mut state = StateDict::new();
+    for (name, p) in model.named_parameters() {
+        state.insert(name, p.value.clone()); // an `Rc` clone, not a copy
+    }
+    // @hide
+    for (name, t) in model.named_buffers() {
+        state.insert(name, t.clone()); // Chapter 23
+    }
+    // @show
     state
 }
 // @end
@@ -116,17 +121,21 @@ pub fn load_state_dict(
     for (name, p) in model.named_parameters() {
         values.push(reader.need(&name, p.value.shape())?); // check them all...
     }
+    // @hide
     for (name, t) in model.named_buffers() {
         values.push(reader.need(&name, t.shape())?); // Chapter 23
     }
+    // @show
     reader.finish()?;
-    let mut values = values.into_iter();
-    for (_, p) in model.named_parameters() {
-        p.value = values.next().unwrap(); // ...before changing any
+    let mut values = values.into_iter(); // the same order, walked again
+    for ((_, p), v) in model.named_parameters().into_iter().zip(&mut values) {
+        p.value = v; // ...before changing any
     }
-    for (_, t) in model.named_buffers() {
-        *t = values.next().unwrap(); // Chapter 23
+    // @hide
+    for ((_, t), v) in model.named_buffers().into_iter().zip(&mut values) {
+        *t = v; // Chapter 23
     }
+    // @show
     Ok(())
 }
 // @end
@@ -162,22 +171,7 @@ impl StateReader<'_> {
         }
         Ok(Some(t.clone()))
     }
-}
-// @end
 
-impl<'s> StateReader<'s> {
-    pub fn new(state: &'s StateDict) -> StateReader<'s> {
-        let (read, missing) = (BTreeSet::new(), vec![]);
-        StateReader {
-            state,
-            read,
-            missing,
-        }
-    }
-}
-
-// @listing reader-need
-impl StateReader<'_> {
     /// The entry `name`, which must be there, or `finish` reports it missing.
     pub fn need(&mut self, name: &str, shape: &[usize]) -> Result<Tensor, Error> {
         let t = self.get(name, shape)?;
@@ -192,16 +186,29 @@ impl StateReader<'_> {
         let unread = |k: &&String| !self.read.contains(k.as_str());
         let unexpected: Vec<String> =
             self.state.keys().filter(unread).cloned().collect();
-        match (self.missing, unexpected) {
-            (m, u) if m.is_empty() && u.is_empty() => Ok(()),
-            (missing, unexpected) => Err(Error::Keys {
-                missing,
-                unexpected,
-            }),
+        if self.missing.is_empty() && unexpected.is_empty() {
+            return Ok(());
         }
+        let missing = self.missing; // both lists, even when one is empty
+        Err(Error::Keys {
+            missing,
+            unexpected,
+        })
     }
 }
 // @end
+
+impl<'s> StateReader<'s> {
+    /// A reader that has read nothing and found nothing missing.
+    pub fn new(state: &'s StateDict) -> StateReader<'s> {
+        let (read, missing) = (BTreeSet::new(), vec![]);
+        StateReader {
+            state,
+            read,
+            missing,
+        }
+    }
+}
 
 // @listing prefix
 /// `state`'s entries with `prefix.` in front of every name.
@@ -229,7 +236,9 @@ pub fn u64_to_tensor(x: u64) -> Tensor {
     Tensor::from_vec(pieces.collect(), &[4])
 }
 
+/// The `u64` that `u64_to_tensor` stored. Panics unless `t` has four pieces.
 pub fn tensor_to_u64(t: &Tensor) -> u64 {
+    assert_eq!(t.shape(), [4], "tensor_to_u64: four 16-bit pieces");
     let pieces = t.to_vec().into_iter().enumerate();
     pieces.map(|(i, p)| (p as u64) << (16 * i)).sum()
 }

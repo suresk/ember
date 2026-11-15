@@ -37,6 +37,7 @@ fn allocations(f: impl FnOnce()) -> (usize, usize) {
     (ALLOCATIONS.get() - count, BYTES.get() - bytes)
 }
 
+// @challenge 5
 #[test]
 fn allocations_per_update() {
     // @listing alloc-test
@@ -61,13 +62,29 @@ fn allocations_per_update() {
     grads(&mut model);
     let later = allocations(|| opt.step(&mut model.parameters()));
     let list = allocations(|| drop(model.parameters()));
-    // Chapter 24's is_contiguous makes no vector: 18 and 12 fewer allocations.
-    assert_eq!(by_hand, (71 - 18, 3960 - 216)); // 2 · 354 · 4 bytes are buffers
+    // @hide
+    // Chapter 24's `is_contiguous` builds no vector of strides, which saves 18
+    // allocations (216 bytes) by hand and 12 (144 bytes) per `Sgd` step. Add them
+    // back, so that this test asserts Chapter 15's counts before Chapter 24 and
+    // after it; Chapter 24's `earlier_counts_now` asserts the new ones.
+    let x = ember::Tensor::zeros(&[2, 3]);
+    let saved = allocations(|| assert!(x.is_contiguous())).0 == 0;
+    let back = |(n, bytes), (dn, db)| {
+        if saved {
+            (n + dn, bytes + db)
+        } else {
+            (n, bytes)
+        }
+    };
+    let (by_hand, first) = (back(by_hand, (18, 216)), back(first, (12, 144)));
+    let later = back(later, (12, 144));
+    // @show
+    assert_eq!(by_hand, (71, 3960)); // 2 · 354 · 4 bytes are buffers
     // The first step also fills the map. A HashMap's size depends on the CPU (its
     // control bytes come in groups of 16 with SSE2 and 8 without), so count only.
-    assert_eq!(first.0, 19 - 12);
+    assert_eq!(first.0, 19);
     assert!(first.1 > later.1);
-    assert_eq!(later, (17 - 12, 288 - 144));
+    assert_eq!(later, (17, 288));
     assert_eq!(list, (5, 144)); // model.parameters() alone
     // @end
 }

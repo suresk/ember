@@ -1,18 +1,17 @@
 //! The examples printed in Chapter 19 of the guided edition: datasets, batches, a
 //! seeded shuffle, and MNIST's IDX files (built here in memory: no test needs the
 //! real files).
+// @listing header
 use ember::data::{self, DataError};
 use ember::{
-    Adam, Batch, DataLoader, Dataset, Module, Rng, Sequential, Tape, Tensor,
-    TensorDataset, cross_entropy, toy,
+    Batch, DataLoader, Dataset, Module, Rng, Sequential, Tape, Tensor, TensorDataset,
+    cross_entropy, toy,
 };
 
-#[path = "../examples/mnist_mlp.rs"]
-#[allow(dead_code)]
-mod mnist_mlp;
 #[path = "../examples/spirals.rs"]
-#[allow(dead_code)]
+#[allow(dead_code)] // the tests use only some of the example's functions
 mod spirals;
+// @end
 
 /// A dataset with only `get`, so its batches come from the default `get_batch`.
 struct PerExample<'a>(&'a TensorDataset);
@@ -48,6 +47,32 @@ fn a_tensor_dataset() {
 #[should_panic(expected = "TensorDataset: 5 rows but 4 labels")]
 fn a_label_per_row() {
     TensorDataset::new(Tensor::arange(&[5, 3]), vec![0; 4]);
+}
+
+#[test]
+#[should_panic(expected = "TensorDataset: x has no axis of examples")]
+fn a_dataset_needs_an_axis_of_examples() {
+    TensorDataset::new(Tensor::from_vec(vec![1.0], &[]), vec![]);
+}
+
+/// Examples of two shapes with the same number of elements.
+struct Ragged;
+
+impl Dataset for Ragged {
+    fn len(&self) -> usize {
+        2
+    }
+
+    fn get(&self, i: usize) -> (Tensor, usize) {
+        let shape: &[usize] = if i == 0 { &[2, 3] } else { &[3, 2] };
+        (Tensor::zeros(shape), 0)
+    }
+}
+
+#[test]
+#[should_panic(expected = "get_batch: example 1's shape")]
+fn the_default_batch_checks_shapes() {
+    Ragged.get_batch(&[0, 1]);
 }
 
 #[test]
@@ -144,8 +169,8 @@ fn reading_idx_bytes() {
     assert!((z.get(&[0, 0]) + 0.4242).abs() < 1e-4); // black: (0 − 0.1307)/0.3081
     assert!((z.get(&[0, 5]) - 2.8215).abs() < 1e-4); // white
     // @end
-    let (dims, pixels) = data::parse_idx(&images, 3).unwrap();
-    assert_eq!((dims, pixels.len()), (vec![2, 2, 3], 12));
+    let data::Idx { dims, data } = data::parse_idx(&images, 3).unwrap();
+    assert_eq!((dims, data.len()), (vec![2, 2, 3], 12));
     let labels = data::mnist_labels(&idx(&[3], &[7, 0, 9])).unwrap();
     assert_eq!(labels, [7, 0, 9]);
 }
@@ -159,9 +184,18 @@ fn bad_files_say_what_is_wrong() {
     let wrong = "magic number 0x00000801, expected 0x00000803"; // as images
     assert_eq!(images(&file), wrong);
     assert_eq!(labels(&file[..10]), "10 bytes, but the header says 11");
-    assert_eq!(labels(&file[..6]), "6 bytes, but the header says 8");
+    assert_eq!(labels(&file[..6]), "6 bytes, shorter than the header's 8");
     assert_eq!(labels(&idx(&[3], &[7, 10, 9])), "label 1 is 10");
     // @end
+    assert_eq!(labels(&[]), "0 bytes, shorter than the header's 8"); // an empty file
+    // A corrupt header whose sizes multiply past usize::MAX: an error, not a panic.
+    let mut huge = idx(&[2, 2, 3], &[]);
+    huge[4..].fill(0xff);
+    let max = usize::MAX;
+    assert_eq!(
+        images(&huge),
+        format!("16 bytes, but the header says {max}")
+    );
     let err = data::mnist_labels(&idx(&[3], &[7, 10, 9])).unwrap_err();
     assert!(matches!(
         err,
@@ -223,6 +257,8 @@ fn gradient(model: &mut Sequential, (x, labels): &Batch) -> Vec<f32> {
     grads.flat_map(|g| g.to_vec()).collect()
 }
 
+// @listing noise-helper
+/// The dot product of two gradients, added up in `f64`.
 fn dot(a: &[f32], b: &[f32]) -> f64 {
     a.iter().zip(b).map(|(&x, &y)| x as f64 * y as f64).sum()
 }
@@ -247,6 +283,7 @@ fn noise(
     }
     [cosine, error.sqrt()]
 }
+// @end
 
 fn round(x: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
@@ -270,7 +307,27 @@ fn minibatch_gradients_are_noisy() {
     let predicted =
         [8.0, 64.0, 512.0f64].map(|b| round(4.645 / b.sqrt() * fpc(b), 3));
     assert_eq!(predicted, [1.639, 0.571, 0.177]);
+    // Every one of the 2,000 single-example gradients against G, not 50 of them.
+    let cosines: Vec<f64> = (0..ds.len())
+        .map(|i| {
+            let g = gradient(&mut model, &ds.get_batch(&[i]));
+            dot(&g, &full) / (dot(&g, &g) * dot(&full, &full)).sqrt()
+        })
+        .collect();
+    let mean = |cs: &[f64]| cs.iter().sum::<f64>() / cs.len() as f64;
+    assert_eq!(round(mean(&cosines), 3), 0.006); // the 50 draws' -0.216 is scatter
+    assert!(cosines.iter().all(|c| c.abs() > 0.5)); // each one is nearly ±G
+    let mut by_class = [vec![], vec![]];
+    for (&c, &label) in cosines.iter().zip(ds.tensors().1) {
+        by_class[label].push(c);
+    }
+    let by_class = by_class.map(|cs| round(mean(&cs), 2));
+    assert_eq!(by_class, [-0.93, 0.94]); // 1,000 points each, pulling apart
 }
+
+#[path = "../examples/mnist_mlp.rs"]
+#[allow(dead_code)]
+mod mnist_mlp;
 
 #[test]
 fn the_mnist_example_step() {
@@ -286,7 +343,7 @@ fn the_mnist_example_step() {
     }
     let ds = TensorDataset::new(x, labels);
     let mut model = mnist_mlp::mlp(&mut rng);
-    let mut opt = Adam::new(1e-3);
+    let mut opt = ember::Adam::new(1e-3);
     let mut loader = DataLoader::new(&ds, 8).shuffle(rng);
     let losses: Vec<f32> = loader
         .epoch()

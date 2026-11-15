@@ -136,7 +136,8 @@ fn broadcasting_both_operands() {
     // @listing both-sides
     let x = Tensor::from_vec(vec![0.0, 10.0, 20.0], &[3, 1]);
     let y = Tensor::arange(&[4]);
-    let shape = broadcast_shapes(x.shape(), y.shape()).unwrap();
+    let shape =
+        broadcast_shapes(x.shape(), y.shape()).expect("[3, 1] and [4] broadcast");
     let (a, b) = (x.expand(&shape), y.expand(&shape));
     assert_eq!((a.strides(), b.strides()), (&[1, 0][..], &[0, 1][..]));
 
@@ -149,10 +150,13 @@ fn broadcasting_both_operands() {
 fn every_slot_is_read_once_per_row() {
     // @listing reads-per-slot
     let b = Tensor::arange(&[3]);
-    let e = b.expand(&[2, 3]).to_vec(); // each value is its slot
-    for slot in 0..3 {
-        let reads = e.iter().filter(|&&v| v == slot as f32).count();
-        assert_eq!(reads, 2); // one read per row of the batch
+    let e = b.expand(&[2, 3]);
+    let mut reads = [0; 3]; // how many elements of e read each slot of b
+    for i in 0..2 {
+        for j in 0..3 {
+            reads[e.storage_index(&[i, j])] += 1;
+        }
     }
+    assert_eq!(reads, [2, 2, 2]); // one read per row of the batch
     // @end
 }

@@ -1,6 +1,7 @@
 //! Tests for the Chapter 1 challenges: `cargo test --test challenges_ch01`.
-use ember::{Tensor, contiguous_strides, unravel_index};
+use ember::{Tensor, contiguous_strides};
 
+// @challenge 1
 #[test]
 fn predict_strides_and_an_index() {
     let x = Tensor::arange(&[3, 2, 5]);
@@ -10,6 +11,7 @@ fn predict_strides_and_an_index() {
     assert_eq!(contiguous_strides(&[4, 1, 3]), vec![3, 3, 1]);
 }
 
+// @challenge 2
 #[test]
 fn full_and_ones() {
     let x = Tensor::full(&[2, 3], 7.5);
@@ -18,6 +20,7 @@ fn full_and_ones() {
     assert_eq!(Tensor::ones(&[4]).get(&[3]), 1.0);
 }
 
+// @challenge 3
 #[test]
 fn eye_has_ones_on_the_diagonal() {
     let i = Tensor::eye(3);
@@ -32,6 +35,9 @@ fn eye_has_ones_on_the_diagonal() {
         }
     }
 }
+
+// @challenge 4
+use ember::unravel_index;
 
 #[test]
 fn unravel_index_inverts_storage_index() {
@@ -49,6 +55,7 @@ fn unravel_index_rejects_a_position_past_the_end() {
     unravel_index(6, &[2, 3]);
 }
 
+// @challenge 5
 #[test]
 fn from_fn_calls_f_with_each_index() {
     let x = Tensor::from_fn(&[2, 3], |i| (10 * i[0] + i[1]) as f32);
@@ -57,6 +64,7 @@ fn from_fn_calls_f_with_each_index() {
     assert_eq!(x.get(&[0, 1]), 1.0);
 }
 
+// @challenge 6
 #[test]
 fn set_copies_on_write() {
     let x = Tensor::arange(&[2, 3]);
@@ -71,6 +79,7 @@ fn set_copies_on_write() {
     assert_eq!(z.get(&[1]), 3.0);
 }
 
+// @challenge 7
 #[test]
 fn allclose_compares_shape_and_values() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
@@ -78,8 +87,14 @@ fn allclose_compares_shape_and_values() {
     assert!(a.allclose(&b, 1e-3));
     assert!(!a.allclose(&b, 1e-5));
     assert!(!a.allclose(&Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3, 1]), 1e-3));
+
+    let inf = Tensor::from_vec(vec![f32::INFINITY, f32::NEG_INFINITY], &[2]);
+    assert!(inf.allclose(&inf, 1e-3), "equal infinities are close");
+    let nan = Tensor::from_vec(vec![f32::NAN], &[1]);
+    assert!(!nan.allclose(&nan, 1e-3), "NaN is close to nothing");
 }
 
+// @challenge 8
 #[test]
 fn display_nests_brackets() {
     assert_eq!(
@@ -95,4 +110,5 @@ fn display_nests_brackets() {
         "[1.5, -2]"
     );
     assert_eq!(format!("{}", Tensor::from_vec(vec![4.0], &[])), "4");
+    assert_eq!(format!("{:.1}", Tensor::arange(&[2])), "[0.0, 1.0]");
 }

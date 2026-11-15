@@ -1,5 +1,6 @@
 //! The examples printed in Chapter 13 of the guided edition: softmax, log-sum-exp and
 //! cross-entropy.
+// @listing header
 #![allow(clippy::approx_constant)] // the printed numbers are ln 2, ln 10 to 4 places
 use ember::{
     Linear, Module, ReLU, Rng, Sequential, Tape, Tensor, Tolerance, Var,
@@ -15,6 +16,7 @@ fn close(x: &Tensor, want: &[f32], tol: f32) -> bool {
     let x = x.to_vec();
     x.len() == want.len() && x.iter().zip(want).all(|(a, b)| (a - b).abs() <= tol)
 }
+// @end
 
 // @listing naive
 /// Softmax straight from the definition, `e^x / Σ e^x`, along the last axis.
@@ -54,6 +56,8 @@ fn log_sum_exp() {
     let lse = rows.logsumexp(1, true); // one per row, the axis kept
     assert_eq!(lse.shape(), [2, 1]);
     assert!(close(&lse, &[3.4076, 1.0986], 1e-4)); // the second is ln 3
+    let masked = t(&[f32::NEG_INFINITY; 2], &[2]); // a fully masked lane
+    assert_eq!(masked.logsumexp(0, false).item(), f32::NEG_INFINITY); // ln 0
     // @end
 }
 
@@ -83,6 +87,8 @@ fn the_log_of_a_softmax() {
     let subtracted = tie.sub(&tie.logsumexp(0, true)); // x - (m + ln s)
     assert!((subtracted.get(&[0]) + 0.693_176).abs() < 1e-6); // 1000.6931 rounded
     assert_eq!(tie.log_softmax(0).to_vec(), [-0.693_147_2; 2]); // (x - m) - ln s
+    let masked = t(&[f32::NEG_INFINITY; 2], &[2]);
+    assert!(masked.softmax(0).to_vec().iter().all(|p| p.is_nan())); // -∞ - (-∞)
     // @end
 }
 
@@ -179,7 +185,8 @@ fn fused_against_composed() {
 }
 
 #[test]
-fn the_gradients_agree_when_nothing_overflows() {
+fn the_gradients_agree_when_nothing_underflows() {
+    // @listing agree
     let tape = Tape::new();
     let z = tape.leaf(t(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.0], &[2, 3]));
     let a = cross_entropy(z, &[2, 1]);
@@ -191,6 +198,7 @@ fn the_gradients_agree_when_nothing_overflows() {
         &gb.get(z).unwrap().to_vec(),
         1e-6
     ));
+    // @end
 }
 
 #[test]
@@ -287,4 +295,37 @@ fn a_tiny_classifier() {
     let logits = model.forward(tape.constant(x)).value();
     assert_eq!(logits.argmax(1), labels); // every point in its class
     // @end
+}
+
+#[test]
+fn a_nan_reaches_logsumexp() {
+    let x = t(&[f32::NAN, f32::NEG_INFINITY, 1.0], &[3]);
+    assert!(x.logsumexp(0, false).item().is_nan());
+    assert!(x.log_softmax(0).to_vec().iter().all(|v| v.is_nan()));
+}
+
+#[test]
+#[should_panic(expected = "one_hot: target 3, 3 classes")]
+fn one_hot_checks_each_class() {
+    one_hot(&[3, 0], 3); // would otherwise write row 1's first entry
+}
+
+#[test]
+fn an_empty_batch_is_nan() {
+    let tape = Tape::new();
+    let loss = cross_entropy(tape.leaf(Tensor::zeros(&[0, 3])), &[]);
+    assert!(loss.value().item().is_nan()); // 0 / 0
+}
+
+#[test]
+fn log_softmax_backward_reads_its_output() {
+    // e^y is bit for bit the softmax that the rule used to recompute from x.
+    let x = Tensor::randn(&[3, 5], &mut Rng::new(3)).mul_scalar(400.0);
+    let y = x.log_softmax(1);
+    assert_eq!(y.exp().to_vec(), x.softmax(1).to_vec());
+    let tape = Tape::new();
+    let v = tape.leaf(x.clone());
+    let g = v.log_softmax(1).select(1, 2).sum_all().backward();
+    let want = one_hot(&[2, 2, 2], 5).sub(&x.softmax(1));
+    assert!(close(g.get(v).unwrap(), &want.to_vec(), 1e-6));
 }

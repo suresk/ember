@@ -61,6 +61,9 @@ impl Module for BatchNorm2d {
     fn train(&mut self, on: bool) {
         self.0.train(on)
     }
+    fn is_training(&self) -> bool {
+        self.0.is_training()
+    }
     fn named_buffers(&mut self) -> Vec<(String, &mut Tensor)> {
         self.0.named_buffers()
     }
@@ -73,8 +76,9 @@ impl Module for BatchNorm2d {
 pub fn group_norm(x: Var<'_>, groups: usize, eps: f32) -> Var<'_> {
     let shape = x.shape();
     let (n, c) = (shape[0], shape[1]);
-    assert!(c % groups == 0, "group_norm: {c} channels, {groups} groups");
-    let per_group = x.value().numel() / (n * groups);
+    let fits = groups > 0 && c % groups == 0;
+    assert!(fits, "group_norm: {c} channels, {groups} groups");
+    let per_group = shape.iter().product::<usize>() / (n * groups);
     let grouped = x.reshape(&[n, groups, per_group]);
     grouped.normalize(2, eps).reshape(&shape)
 }
@@ -83,14 +87,17 @@ pub fn group_norm(x: Var<'_>, groups: usize, eps: f32) -> Var<'_> {
 // @listing cumulative
 /// Run `batches` through `bn` in training mode with PyTorch's
 /// `momentum=None`: each batch weighs `1 / (batches seen + 1)`, so the running
-/// statistics are the plain averages of every batch's.
+/// statistics are the plain averages of every batch's. `bn`'s momentum is
+/// restored afterwards.
 pub fn cumulative(bn: &mut BatchNorm1d, batches: &[Tensor]) {
-    let tape = Tape::new();
+    assert!(bn.is_training(), "cumulative: bn is in evaluation mode");
+    let (tape, momentum) = (Tape::new(), bn.momentum);
     for batch in batches {
         let seen = bn.running().batches.item();
         bn.momentum = 1.0 / (seen + 1.0);
         bn.forward(tape.constant(batch.clone()));
     }
+    bn.momentum = momentum;
 }
 // @end
 
@@ -129,8 +136,22 @@ impl<M: Module> Module for NormResidual<M> {
         params.extend(self.norm.parameters());
         params
     }
+    fn named_parameters(&mut self) -> Vec<(String, &mut Parameter)> {
+        let f = self.f.named_parameters().into_iter();
+        let mut named: Vec<_> = f.map(|(n, p)| (format!("f.{n}"), p)).collect();
+        let norm = self.norm.named_parameters().into_iter();
+        named.extend(norm.map(|(n, p)| (format!("norm.{n}"), p)));
+        named
+    }
     fn train(&mut self, on: bool) {
         self.f.train(on)
+    }
+    fn is_training(&self) -> bool {
+        self.f.is_training()
+    }
+    fn named_buffers(&mut self) -> Vec<(String, &mut Tensor)> {
+        let f = self.f.named_buffers().into_iter();
+        f.map(|(n, t)| (format!("f.{n}"), t)).collect() // LayerNorm has none
     }
 }
 // @end

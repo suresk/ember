@@ -1,8 +1,5 @@
 //! Tests for the Chapter 17 challenges.
-use ember::{
-    Adagrad, Adam, AmsGrad, CenteredRmsProp, Lion, Optimizer, Parameter, RmsProp,
-    Rng, Tensor, toy,
-};
+use ember::{Adam, Optimizer, Parameter, RmsProp, Rng, Tensor, toy};
 
 #[path = "../examples/spirals.rs"]
 #[allow(dead_code)]
@@ -32,6 +29,7 @@ fn moves(
         .collect()
 }
 
+// @challenge 1
 #[test]
 fn two_adam_steps_by_hand() {
     // @listing predict-test
@@ -50,6 +48,7 @@ fn two_adam_steps_by_hand() {
     // @end
 }
 
+// @challenge 2
 #[test]
 fn epsilon_and_tiny_gradients() {
     // @listing eps-test
@@ -59,6 +58,7 @@ fn epsilon_and_tiny_gradients() {
     // @end
 }
 
+// @challenge 3
 #[test]
 fn adam_without_momentum() {
     // @listing beta1-test
@@ -70,6 +70,9 @@ fn adam_without_momentum() {
     assert!(close(&at(&adam), &[0.01; 5], 1e-8));
     // @end
 }
+
+// @challenge 4
+use ember::CenteredRmsProp;
 
 #[test]
 fn centered_rmsprop() {
@@ -90,6 +93,9 @@ fn centered_rmsprop() {
     // @end
 }
 
+// @challenge 5
+use ember::AmsGrad;
+
 #[test]
 fn amsgrad_never_forgets() {
     // @listing amsgrad-test
@@ -103,6 +109,9 @@ fn amsgrad_never_forgets() {
     // @end
 }
 
+// @challenge 6
+use ember::Adagrad;
+
 #[test]
 fn adagrad_slows_down() {
     // @listing adagrad-test
@@ -111,6 +120,9 @@ fn adagrad_slows_down() {
     assert!(close(&at, &[0.01, 0.0070711, 0.005, 0.001], 1e-6)); // 0.01/√t
     // @end
 }
+
+// @challenge 7
+use ember::{Lion, Module};
 
 #[test]
 fn lion_takes_sign_steps() {
@@ -128,9 +140,9 @@ fn lion_takes_sign_steps() {
         let losses: Vec<f32> = (0..steps)
             .map(|_| spirals::step_with(&mut model, &small, &mut opt))
             .collect();
-        let state: usize = opt.buffers.state.values().map(|(_, [m])| m.numel()).sum();
-        (losses.iter().position(|&l| l < 0.01).map(|i| i + 1), state)
+        let size: usize = model.parameters().iter().map(|p| p.value.numel()).sum();
+        (losses.iter().position(|&l| l < 0.01).map(|i| i + 1), size)
     };
-    assert_eq!(run(0.01, 191), (Some(191), 354)); // one buffer: 354 numbers
+    assert_eq!(run(0.01, 191), (Some(191), 354)); // m: one number per weight, 354
     // @end
 }

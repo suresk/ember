@@ -1,9 +1,8 @@
 //! Tests for the Chapter 20 challenges.
 use ember::train::{read_state, to_bytes};
 use ember::{
-    AdamW, BestK, CheckpointError, EarlyStopping, Linear, Module, Rng, Tensor,
-    accuracy, confusion, load_matching, seal, state_dict, to_safetensors,
-    top_k_accuracy, train_step, unseal,
+    AdamW, CheckpointError, Linear, Module, Rng, Tensor, accuracy, state_dict,
+    train_step,
 };
 use std::path::PathBuf;
 
@@ -20,6 +19,7 @@ fn tiny() -> Linear {
     Linear::from_tensors(t(&[1., -2.], &[2, 1]), t(&[0.5], &[1]))
 }
 
+// @challenge 1
 #[test]
 fn predict_the_checkpoint_sizes() {
     // @listing predict-test
@@ -41,6 +41,9 @@ fn predict_the_checkpoint_sizes() {
     // @end
 }
 
+// @challenge 2
+use ember::{confusion, top_k_accuracy};
+
 #[test]
 fn a_confusion_matrix() {
     // @listing confusion-test
@@ -55,6 +58,9 @@ fn a_confusion_matrix() {
     assert_eq!(top_k_accuracy(&logits, &labels, 2), 1.0);
     // @end
 }
+
+// @challenge 3
+use ember::EarlyStopping;
 
 #[test]
 fn early_stopping_with_patience() {
@@ -72,6 +78,7 @@ fn early_stopping_with_patience() {
     // @end
 }
 
+// @challenge 4
 /// A fresh folder in the system's temporary directory, removed by `Drop`.
 struct Scratch(PathBuf);
 
@@ -80,6 +87,9 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+// @challenge 4
+use ember::BestK;
 
 #[test]
 fn the_best_two() {
@@ -101,7 +111,15 @@ fn the_best_two() {
     files.sort();
     assert_eq!(files, ["epoch-2.embr", "epoch-4.embr"]);
     // @end
+    // A diverged run's NaN is never among the best.
+    assert!(!best.offer(6, f32::NAN, &state).unwrap());
+    let mut fresh = BestK::new(2, dir.clone());
+    assert!(!fresh.offer(1, f32::NAN, &state).unwrap());
+    assert!(fresh.kept.is_empty() && !fresh.path(1).exists());
 }
+
+// @challenge 5
+use ember::{seal, unseal};
 
 #[test]
 fn corrupted_checkpoints() {
@@ -122,6 +140,9 @@ fn corrupted_checkpoints() {
     assert_eq!(e, "corrupt at byte 62: a wrong checksum");
     // @end
 }
+
+// @challenge 6
+use ember::load_matching;
 
 #[test]
 fn a_new_head() {
@@ -153,6 +174,9 @@ fn a_new_head() {
         Err(CheckpointError::Keys { .. })
     ));
 }
+
+// @challenge 7
+use ember::to_safetensors;
 
 #[test]
 fn safetensors_bytes() {

@@ -10,10 +10,12 @@ use crate::tensor::Tensor;
 #[allow(clippy::should_implement_trait)]
 impl<'t> Var<'t> {
     // @listing sub-neg
+    /// `a - b`: the derivatives are 1 and -1, so the rule reads no tensors.
     pub fn sub(self, other: Var<'t>) -> Var<'t> {
         self.binary(other, "sub", Tensor::sub, |_, _, g| (g.clone(), g.neg()))
     }
 
+    /// `-x`, with derivative -1.
     pub fn neg(self) -> Var<'t> {
         self.unary("neg", Tensor::neg, |_, _, g| g.neg())
     }
@@ -22,12 +24,12 @@ impl<'t> Var<'t> {
     // @listing scalars
     /// `x + s` for a plain number `s`: the derivative is 1, as for `add`.
     pub fn add_scalar(self, s: f32) -> Var<'t> {
-        self.unary("add_scalar", |x| x.add_scalar(s), |_, _, g| g.clone())
+        self.unary("add_scalar", |x| x + s, |_, _, g| g.clone())
     }
 
     /// `x · s`: the derivative is `s`.
     pub fn mul_scalar(self, s: f32) -> Var<'t> {
-        self.unary("mul_scalar", |x| x.mul_scalar(s), move |_, _, g| g * s)
+        self.unary("mul_scalar", |x| x * s, move |_, _, g| g * s)
     }
 
     /// `x / s`: the derivative is `1/s`.
@@ -42,7 +44,7 @@ impl<'t> Var<'t> {
     pub fn div(self, other: Var<'t>) -> Var<'t> {
         self.binary(other, "div", Tensor::div, |a, b, g| {
             let ga = g.div(b);
-            let gb = g.mul(a).div(&b.mul(b)).neg();
+            let gb = ga.mul(a).div(b).neg(); // -(g/b)·a/b: b² could overflow
             (ga, gb)
         })
     }
@@ -61,6 +63,7 @@ impl<'t> Var<'t> {
     // @end
 
     // @listing activations
+    /// `tanh x`, with derivative `1 - y²`.
     pub fn tanh(self) -> Var<'t> {
         let d = |g: f32, y: f32| g * (1.0 - y * y); // g times dy/dx
         self.unary("tanh", Tensor::tanh, move |_, y, g| g.zip_map(y, d))
@@ -68,7 +71,7 @@ impl<'t> Var<'t> {
 
     /// One node, where Chapter 6's composite sigmoid made seven.
     pub fn sigmoid(self) -> Var<'t> {
-        let d = |g: f32, y: f32| g * y * (1.0 - y);
+        let d = |g: f32, y: f32| g * y * (1.0 - y); // y(1 - y)
         self.unary("sigmoid", Tensor::sigmoid, move |_, y, g| g.zip_map(y, d))
     }
 
@@ -80,9 +83,16 @@ impl<'t> Var<'t> {
     // @end
 
     // @listing powf
-    /// `x^p` for a fixed exponent `p`, with derivative `p·x^(p-1)`.
+    /// `x^p` for a fixed exponent `p`, with derivative `p·x^(p-1)`, and 0 for
+    /// `p = 0`, where `0 · x^(-1)` would be NaN at x = 0.
     pub fn powf(self, p: f32) -> Var<'t> {
-        let d = move |g: f32, x: f32| g * p * math::powf(x, p - 1.0);
+        let d = move |g: f32, x: f32| {
+            if p == 0.0 {
+                0.0
+            } else {
+                g * p * math::powf(x, p - 1.0)
+            }
+        };
         self.unary("powf", move |x| x.powf(p), move |x, _, g| g.zip_map(x, d))
     }
     // @end
@@ -117,12 +127,15 @@ operator!(Mul mul, f32, Var<'t>, |s, x| x.mul_scalar(s));
 operator!(Div div, f32, Var<'t>, |s, x| x.powf(-1.0).mul_scalar(s));
 // @end
 
+// @listing neg
+/// Unary minus. It has one operand, so it doesn't fit `operator!`.
 impl<'t> std::ops::Neg for Var<'t> {
     type Output = Var<'t>;
     fn neg(self) -> Var<'t> {
         Var::neg(self)
     }
 }
+// @end
 
 #[cfg(test)]
 mod tests {
@@ -158,13 +171,14 @@ mod tests {
         let x = tape.leaf(Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]));
         let wrong = |l: Var| {
             let grads = backward_overwriting(&tape, l.id());
-            grads[x.id()].as_ref().unwrap().to_vec()
+            grads[x.id()].as_ref().expect("a gradient").to_vec()
         };
         let cube = (x * x * x).sum_all();
-        assert_eq!(cube.backward().get(x).unwrap().to_vec(), [3.0, 12.0, 27.0]);
+        let right = |l: Var| l.backward().get(x).expect("a gradient").to_vec();
+        assert_eq!(right(cube), [3.0, 12.0, 27.0]);
         assert_eq!(wrong(cube), [1.0, 4.0, 9.0]); // x², a third of 3x²
         let poly = (x * x + x).sum_all();
-        assert_eq!(poly.backward().get(x).unwrap().to_vec(), [3.0, 5.0, 7.0]);
+        assert_eq!(right(poly), [3.0, 5.0, 7.0]);
         assert_eq!(wrong(poly), [1.0, 2.0, 3.0]); // x, not 2x + 1
         // @end
     }

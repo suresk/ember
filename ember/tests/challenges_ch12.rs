@@ -1,9 +1,8 @@
 //! Tests for the Chapter 12 challenges.
 use ember::nn::init;
 use ember::{
-    Identity, LeakyReLU, Linear, Module, Parameter, ReLU, Rng, Sequential, Tanh,
-    Tape, Tensor, Tolerance, Var, gradcheck_params, he_std_leaky, moments,
-    naive_shuffle, orthogonal, truncated_normal,
+    Linear, Module, Parameter, ReLU, Rng, Sequential, Tanh, Tape, Tensor, Tolerance,
+    Var,
 };
 use std::collections::BTreeMap;
 
@@ -17,6 +16,13 @@ fn rms(x: &Tensor) -> f32 {
     (sum / v.len() as f64).sqrt() as f32
 }
 
+// @challenge 2
+use ember::moments;
+
+// @challenge 4
+use ember::LeakyReLU;
+
+// @challenge 1
 #[test]
 fn predict_shapes_and_scales() {
     let mut rng = Rng::new(42);
@@ -41,6 +47,8 @@ fn predict_shapes_and_scales() {
     assert!(near(rms(&layer.weight.value) as f64, 0.02551, 1e-2));
 }
 
+// @challenge 2
+
 #[test]
 fn samples_have_the_right_moments() {
     // @listing moments-test
@@ -56,12 +64,14 @@ fn samples_have_the_right_moments() {
     let ones: u32 = (0..100_000).map(|_| rng.next_u64().count_ones()).sum();
     assert!(near(ones as f64 / 6_400_000.0, 0.5, 1e-3)); // half the bits set
     // @end
+    assert!(near(ones as f64 / 6_400_000.0, 0.49984, 1e-5));
     assert!(near(moments(&u).0, 0.49893, 1e-4) && near(moments(&z).1, 1.00350, 1e-4));
     assert!(
         near(moments(&u).1, 0.08285, 1e-3) && near(moments(&z).0, -0.00579, 1e-2)
     );
 }
 
+// @challenge 3
 /// How often each order of `[0, 1, 2]` comes out of 60,000 shuffles.
 fn orders(shuffle: impl Fn(&mut Rng, &mut [usize; 3])) -> Vec<usize> {
     let mut rng = Rng::new(42);
@@ -73,6 +83,9 @@ fn orders(shuffle: impl Fn(&mut Rng, &mut [usize; 3])) -> Vec<usize> {
     }
     counts.into_values().collect() // in order: 012, 021, 102, 120, 201, 210
 }
+
+// @challenge 3
+use ember::naive_shuffle;
 
 #[test]
 fn fisher_yates_is_uniform() {
@@ -96,6 +109,7 @@ fn naive_shuffle_is_biased() {
     );
 }
 
+// @challenge 4
 /// The RMS after each of ten layers of leaky ReLU with slope 0.5.
 fn leaky_layers(std: f32) -> Vec<f32> {
     let mut rng = Rng::new(42);
@@ -110,6 +124,9 @@ fn leaky_layers(std: f32) -> Vec<f32> {
     sizes
 }
 
+// @challenge 4
+use ember::he_std_leaky;
+
 #[test]
 fn leaky_relu_he_gain() {
     assert!(near(
@@ -123,6 +140,9 @@ fn leaky_relu_he_gain() {
     assert!(gained.iter().all(|&s| (0.89..0.98).contains(&s)));
     assert_eq!(LeakyReLU(0.5).parameters().len(), 0);
 }
+
+// @challenge 5
+use ember::Identity;
 
 #[test]
 fn building_a_sequential() {
@@ -143,15 +163,28 @@ fn building_a_sequential() {
     assert_eq!(model.forward(x).shape(), [2, 2]);
 }
 
+// @challenge 6
+use ember::truncated_normal;
+
+/// The mean and the variance, in f64 (Challenge 12.2's `moments`, so that this
+/// check doesn't need 12.2).
+fn mean_var(xs: &[f32]) -> (f64, f64) {
+    let n = xs.len() as f64;
+    let mean = xs.iter().map(|&x| x as f64).sum::<f64>() / n;
+    let var = xs.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+    (mean, var)
+}
+
 #[test]
 fn truncated_normal_std() {
     let t = truncated_normal(&[100_000], 0.1, &mut Rng::new(42));
     assert!(t.to_vec().iter().all(|x| x.abs() <= 0.2));
-    let (mean, var) = moments(&t.to_vec());
+    let (mean, var) = mean_var(&t.to_vec());
     assert!(mean.abs() < 1e-3);
     assert!(near(var.sqrt(), 0.087_96, 2e-3)); // 0.8796 · 0.1
 }
 
+// @challenge 7
 /// A layer whose author put the weight on the tape as a constant.
 struct Forgetful(Linear);
 
@@ -166,6 +199,9 @@ impl Module for Forgetful {
         self.0.parameters()
     }
 }
+
+// @challenge 7
+use ember::gradcheck_params;
 
 #[test]
 fn checking_parameters() {
@@ -196,6 +232,16 @@ fn checking_parameters() {
     assert_eq!((worst.input, worst.analytic), (0, 0.0)); // the weight got nothing
     assert!(near(worst.ratio as f64, 99.2, 1e-2)); // where nudges say -13.03
 }
+
+#[test]
+#[should_panic(expected = "gradcheck_params: the model has no parameters")]
+fn checking_a_model_with_no_parameters() {
+    let x = Tensor::randn(&[2, 3], &mut Rng::new(42));
+    let _ = gradcheck_params(&mut Tanh, &x, Tolerance::default());
+}
+
+// @challenge 8
+use ember::orthogonal;
 
 #[test]
 fn orthogonal_init() {
@@ -229,6 +275,12 @@ fn the_numbers_in_the_answers() {
     // Challenge 12.3: Fisher–Yates' spread, and the naive shuffle's 27 paths.
     assert!(near((60_000.0f64 / 6.0 * 5.0 / 6.0).sqrt(), 91.3, 0.01));
     assert_eq!((60_000 * 5 / 27, 60_000 * 4 / 27), (11_111, 8_888));
+    let se_bits = (0.25f64 / 6_400_000.0).sqrt();
+    assert!(near(se_bits, 0.000_198, 1e-2));
+    assert!(near((0.5 - 0.499_84) / se_bits, 0.81, 1e-2));
+    assert!(near(0.000_5 / se_bits, 2.5, 2e-2)); // the test's tolerance
+    // Challenge 12.3: the likeliest orders against the rarest, and against 1/6.
+    assert!(near(5.0 / 4.0, 1.25, 1e-9) && near((5.0 / 27.0) * 6.0, 1.111, 1e-3));
     // Challenge 12.6: the truncated normal's variance.
     let density = (-2.0f64).exp() / (2.0 * std::f64::consts::PI).sqrt(); // φ(2)
     assert!(near(density, 0.053_99, 1e-3));

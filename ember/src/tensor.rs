@@ -29,11 +29,23 @@ pub fn contiguous_strides(shape: &[usize]) -> Vec<usize> {
     // @end
 }
 
+// @listing numel-of
+/// The number of elements a tensor of shape `shape` has: the product of the sizes,
+/// checked, so a shape too big for `usize` panics instead of wrapping around.
+fn numel_of(shape: &[usize]) -> usize {
+    let n = shape
+        .iter()
+        .try_fold(1, |n: usize, &size| n.checked_mul(size));
+    n.unwrap_or_else(|| panic!("shape {shape:?} has more than usize::MAX elements"))
+}
+// @end
+
 impl Tensor {
     // @listing constructors
-    /// A tensor that owns `data`, laid out row-major with the given shape.
+    /// A tensor that owns `data`, laid out row-major with the given shape. Panics
+    /// if `data` doesn't hold exactly one value per element of `shape`.
     pub fn from_vec(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        let numel: usize = shape.iter().product();
+        let numel = numel_of(shape);
         assert_eq!(
             data.len(),
             numel,
@@ -50,14 +62,14 @@ impl Tensor {
     }
 
     /// The values 0, 1, 2, … laid out in `shape`. Handy in tests: each value is its
-    /// own row-major position.
+    /// own row-major position (exactly, up to 2^24 elements).
     pub fn arange(shape: &[usize]) -> Tensor {
-        let numel: usize = shape.iter().product();
-        Tensor::from_vec((0..numel).map(|i| i as f32).collect(), shape)
+        let data = (0..numel_of(shape)).map(|i| i as f32).collect();
+        Tensor::from_vec(data, shape)
     }
 
     pub fn zeros(shape: &[usize]) -> Tensor {
-        Tensor::from_vec(vec![0.0; shape.iter().product()], shape)
+        Tensor::from_vec(vec![0.0; numel_of(shape)], shape)
     }
     // @end
 
@@ -88,7 +100,8 @@ impl Tensor {
     }
     // @end
 
-    /// Where element `index` lives in the storage buffer.
+    /// Where element `index` lives in the storage buffer. Panics if `index` has the
+    /// wrong number of axes or any index is past the end of its axis.
     pub fn storage_index(&self, index: &[usize]) -> usize {
         // @solution ch01 storage_index
         assert_eq!(

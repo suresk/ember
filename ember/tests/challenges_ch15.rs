@@ -1,7 +1,6 @@
 //! Tests for the Chapter 15 challenges.
 use ember::{
-    MaxNorm, Module, Optimizer, ParamGroup, Parameter, Rng, SignSgd, Tape, Tensor,
-    decay_groups, mse_loss, toy,
+    Module, Optimizer, ParamGroup, Parameter, Rng, Tape, Tensor, mse_loss, toy,
 };
 
 #[path = "../examples/spirals.rs"]
@@ -19,6 +18,7 @@ fn param(values: &[f32]) -> Parameter {
     Parameter::new(Tensor::from_vec(values.to_vec(), &[values.len()]))
 }
 
+// @challenge 1
 #[test]
 fn two_steps_with_decay() {
     // @listing predict-test
@@ -51,6 +51,9 @@ fn two_steps_with_decay() {
     // @end
 }
 
+// @challenge 2
+use ember::decay_groups;
+
 #[test]
 fn decay_groups_skip_biases() {
     let mut model = spirals::mlp(16, &mut Rng::new(14));
@@ -65,12 +68,22 @@ fn decay_groups_skip_biases() {
     assert_eq!(opt.groups()[1].ids.len(), 3); // the three biases
 }
 
+// @challenge 3
+use ember::SignSgd;
+
 #[test]
 fn sign_sgd() {
     let mut w = param(&[1.0, -2.0, 3.0]);
     w.grad = Some(Tensor::from_vec(vec![0.5, -0.001, 0.0], &[3]));
     SignSgd::new(0.1).step(&mut [&mut w]);
     assert!(close(&w.value.to_vec(), &[0.9, -1.9, 3.0], 1e-6));
+    // The group's weight decay goes into the gradient before its sign is taken.
+    let mut d = param(&[1.0, -2.0]);
+    d.grad = Some(Tensor::from_vec(vec![0.5, 0.5], &[2]));
+    let mut opt = SignSgd::new(0.1);
+    opt.groups_mut()[0].weight_decay = 0.5; // 0.5 + 0.5w is 1 and -0.5
+    opt.step(&mut [&mut d]);
+    assert!(close(&d.value.to_vec(), &[0.9, -1.9], 1e-6));
 
     // @listing sign-test
     let (x, y) = toy::xor();
@@ -111,6 +124,7 @@ fn sign_sgd() {
     }
 }
 
+// @challenge 4
 #[test]
 fn saved_parameters_survive() {
     // @listing saved-test
@@ -139,6 +153,9 @@ fn saved_parameters_survive() {
     // @end
 }
 
+// @challenge 6
+use ember::MaxNorm;
+
 #[test]
 fn max_norm() {
     // @listing max-norm-test
@@ -155,4 +172,10 @@ fn max_norm() {
     assert_eq!(b.value.to_vec(), [5.0, 5.0]); // biases are not constrained
     assert_eq!(opt.groups()[0].lr, 0.1); // the inner optimizer's groups
     // @end
+
+    // A matrix without a gradient was skipped by the inner step, and is left alone.
+    let mut frozen =
+        Parameter::new(Tensor::from_vec(vec![3.0, 0.0, 4.0, 1.0], &[2, 2]));
+    opt.step(&mut [&mut frozen]);
+    assert_eq!(frozen.value.to_vec(), [3.0, 0.0, 4.0, 1.0]);
 }

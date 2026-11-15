@@ -12,7 +12,8 @@ use crate::tensor::Tensor;
 pub fn moments(xs: &[f32]) -> (f64, f64) {
     let n = xs.len() as f64;
     let mean = xs.iter().map(|&x| x as f64).sum::<f64>() / n;
-    let var = xs.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+    let var = xs.iter().map(|&x| (x as f64 - mean) * (x as f64 - mean));
+    let var = var.sum::<f64>() / n;
     (mean, var)
 }
 // @end
@@ -113,8 +114,12 @@ fn param_grads(model: &mut dyn Module, x: &Tensor) -> Vec<Tensor> {
 // @listing param-slope
 /// The central difference of the loss in element `j` of parameter `i`. The
 /// parameter is put back as it was, buffer and all.
-fn slope(model: &mut dyn Module, x: &Tensor, ij: (usize, usize), eps: f32) -> f32 {
-    let (i, j) = ij;
+fn slope(
+    model: &mut dyn Module,
+    x: &Tensor,
+    (i, j): (usize, usize),
+    eps: f32,
+) -> f32 {
     let value = model.parameters()[i].value.clone();
     let x0 = value.to_vec()[j];
     let (up, down) = (x0 + eps * x0.abs().max(1.0), x0 - eps * x0.abs().max(1.0));
@@ -137,26 +142,37 @@ pub fn gradcheck_params(
     x: &Tensor,
     tol: Tolerance,
 ) -> Result<WorstElement, WorstElement> {
-    let mut worst = (f32::NEG_INFINITY, 0, 0, 0.0, 0.0); // ratio, i, j, a, n
-    for (i, g) in param_grads(model, x).into_iter().enumerate() {
-        for (j, a) in g.to_vec().into_iter().enumerate() {
-            let n = slope(model, x, (i, j), tol.eps);
-            let ratio = tol.ratio(a, n);
-            if ratio > worst.0 || ratio.is_nan() {
-                worst = (ratio, i, j, a, n);
+    assert!(
+        !model.parameters().is_empty(),
+        "gradcheck_params: the model has no parameters"
+    );
+    let mut worst: Option<WorstElement> = None;
+    for (input, g) in param_grads(model, x).into_iter().enumerate() {
+        for (j, analytic) in g.to_vec().into_iter().enumerate() {
+            let numeric = slope(model, x, (input, j), tol.eps);
+            let ratio = tol.ratio(analytic, numeric);
+            // a NaN counts as the worst
+            if worst
+                .as_ref()
+                .is_none_or(|w| ratio > w.ratio || ratio.is_nan())
+            {
+                let index = unravel_index(j, g.shape());
+                worst = Some(WorstElement {
+                    input,
+                    index,
+                    analytic,
+                    numeric,
+                    ratio,
+                });
             }
         }
     }
-    let (ratio, input, j, analytic, numeric) = worst;
-    let index = unravel_index(j, model.parameters()[input].value.shape());
-    let worst = WorstElement {
-        input,
-        index,
-        analytic,
-        numeric,
-        ratio,
-    };
-    if ratio <= 1.0 { Ok(worst) } else { Err(worst) }
+    let worst = worst.expect("gradcheck_params: every parameter is empty");
+    if worst.ratio <= 1.0 {
+        Ok(worst)
+    } else {
+        Err(worst)
+    }
 }
 // @end
 

@@ -12,6 +12,7 @@ use ember::{
 use std::path::PathBuf;
 use std::time::Instant;
 
+// @listing norm-mlp
 /// Which normalization layer follows each hidden `Linear` layer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Norm {
@@ -20,7 +21,6 @@ pub enum Norm {
     Layer,
 }
 
-// @listing norm-mlp
 /// Linear layers between the `sizes`; each hidden one is followed by the
 /// normalization layer `norm` (if any) and a ReLU.
 pub fn mlp_norm(sizes: &[usize], norm: Norm, rng: &mut Rng) -> Sequential {
@@ -44,8 +44,10 @@ pub fn mlp_norm(sizes: &[usize], norm: Norm, rng: &mut Rng) -> Sequential {
 /// The network of the sweep: three hidden layers of 256.
 pub const SIZES: [usize; 5] = [784, 256, 256, 256, 10];
 
+// @listing run
 /// Train `epochs` epochs of SGD with momentum 0.9 at a constant rate `lr`, no
-/// clipping; the validation accuracy after each epoch, or NaN once diverged.
+/// clipping: the validation accuracy after each epoch, or NaN for an epoch
+/// whose mean training loss is not finite (diverged).
 fn run<D: Dataset + ?Sized>(
     (train, val): (&D, &D),
     norm: Norm,
@@ -67,6 +69,7 @@ fn run<D: Dataset + ?Sized>(
     }
     row
 }
+// @end
 
 fn sweep(dir: &PathBuf, epochs: usize) -> Result<(), DataError> {
     let full = data::mnist(dir, true)?;

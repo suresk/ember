@@ -51,6 +51,14 @@ fn rmsprop_by_hand() {
     assert!(close(&vs, &[0.01, 0.018, 0.0247575], 1e-7));
     assert!(close(&ws, &[0.9, 0.832918, 0.779982], 1e-6));
     // @end
+    // An infinite gradient: v = ∞ and the step is ∞/∞, so the weight is NaN.
+    let w = walk(
+        &mut RmsProp::new(0.01),
+        &[1.0],
+        |_, _| vec![f32::INFINITY],
+        1,
+    );
+    assert!(w[0][0].is_nan());
 }
 
 #[test]
@@ -87,6 +95,27 @@ fn the_first_step_is_a_sign() {
     assert_eq!([1.0, 1000.0, -5.0].map(first), [-0.1, -0.1, 0.1]);
     assert!((first(0.001) + 0.099999).abs() < 1e-6); // eps shows at 0.001
     // @end
+    // Kingma and Ba's bound: after 999 zero gradients, a gradient of 1 moves w
+    // by 2.51·lr, under (1 − β₁)/√(1 − β₂) = 3.16·lr.
+    let one_at_1000 = |t, _: &[f32]| vec![if t == 1000 { 1.0 } else { 0.0 }];
+    let late = walk(&mut Adam::new(0.1), &[0.0], one_at_1000, 1000);
+    let jump = (late[998][0] - late[999][0]) / 0.1;
+    assert!((jump - 2.5146).abs() < 1e-3);
+}
+
+#[test]
+fn adam_settles_on_a_clean_bowl() {
+    // @listing settles
+    let path = walk(&mut Adam::new(0.1), &[1.0], |_, w| w.to_vec(), 1000);
+    let w: Vec<f32> = path.iter().map(|w| w[0]).collect();
+    let low = w[..60].iter().copied().fold(0.0, f32::min);
+    assert_eq!(w.iter().position(|&x| x == low), Some(18)); // step 19
+    assert!((low + 0.2731).abs() < 1e-4);
+    // The largest |w| over the ten steps up to step t:
+    let widest = |t: usize| w[t - 10..t].iter().fold(0.0, |a: f32, x| a.max(x.abs()));
+    assert!(widest(50) < 0.1 && widest(100) < 0.008 && widest(200) < 4e-5);
+    assert!(widest(1000) < 1e-22);
+    // @end
 }
 
 #[test]
@@ -103,7 +132,7 @@ fn without_bias_correction() {
     let at = [1, 2, 3, 12, 100, 1000].map(|t| ratio[t - 1] as f32);
     let want = [3.1623, 4.2496, 4.9502, 6.5685, 3.2408, 1.2576];
     assert!(close(&at, &want, 1e-4));
-    let peak = ratio.iter().cloned().fold(0.0, f64::max);
+    let peak = ratio.iter().copied().fold(0.0, f64::max);
     assert_eq!(peak, ratio[11]); // the largest step is step 12's
     // @end
     // With the corrections, every step of a constant gradient is exactly lr.
@@ -144,6 +173,7 @@ fn two_kinds_of_decay() {
     // @end
 }
 
+// @listing kept
 /// What is left of a weight of 1 after 1000 steps of `opt` whose gradient
 /// alternates +s, −s: its value, divided by the value without decay.
 fn kept(with: &mut dyn Optimizer, without: &mut dyn Optimizer, s: f32) -> f32 {
@@ -152,6 +182,7 @@ fn kept(with: &mut dyn Optimizer, without: &mut dyn Optimizer, s: f32) -> f32 {
     let b = walk(without, &[1.0], grad, 1000)[999][0];
     a / b
 }
+// @end
 
 #[test]
 fn decay_and_gradient_size() {
@@ -160,8 +191,8 @@ fn decay_and_gradient_size() {
     let rows = [0.01, 0.1, 1.0, 10.0, 100.0].map(|s| {
         let sgd = kept(&mut Sgd::new(lr).weight_decay(wd), &mut Sgd::new(lr), s);
         let adam = kept(&mut Adam::new(lr).weight_decay(wd), &mut Adam::new(lr), s);
-        let adamw = AdamW::new(lr).weight_decay(wd);
-        let adamw = kept(&mut { adamw }, &mut Adam::new(lr), s);
+        let mut decoupled = AdamW::new(lr).weight_decay(wd);
+        let adamw = kept(&mut decoupled, &mut Adam::new(lr), s);
         [sgd, adam, adamw]
     });
     let sgd = [0.9048, 0.9048, 0.9049, 0.9053, 0.9096];
@@ -173,20 +204,20 @@ fn decay_and_gradient_size() {
 }
 
 #[test]
-fn the_spirals_with_adam() {
+fn the_spirals_with_adam_and_rmsprop() {
     // @listing spirals
-    let run = |mut opt: Box<dyn Optimizer>, steps| {
+    let run = |opt: &mut dyn Optimizer, steps| {
         let mut rng = Rng::new(14);
         let small = toy::spirals(25, 1.5, 0.05, &mut rng); // Section 14.6's short run
         let mut model = spirals::mlp(16, &mut rng);
         let losses: Vec<f32> = (0..steps)
-            .map(|_| spirals::step_with(&mut model, &small, &mut *opt))
+            .map(|_| spirals::step_with(&mut model, &small, opt))
             .collect();
         let below = losses.iter().position(|&l| l < 0.01).map(|i| i + 1);
         (below, spirals::accuracy(&model, &small))
     };
-    assert_eq!(run(Box::new(Adam::new(0.03)), 82), (Some(82), 1.0));
-    assert_eq!(run(Box::new(RmsProp::new(0.01)), 345), (Some(345), 1.0));
+    assert_eq!(run(&mut Adam::new(0.03), 82), (Some(82), 1.0));
+    assert_eq!(run(&mut RmsProp::new(0.01), 345), (Some(345), 1.0));
     // @end
 }
 

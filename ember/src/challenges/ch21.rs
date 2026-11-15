@@ -50,6 +50,9 @@ impl Module for DropConnect {
     fn train(&mut self, on: bool) {
         self.drop.train(on);
     }
+    fn is_training(&self) -> bool {
+        self.drop.is_training()
+    }
 }
 // @end
 
@@ -64,7 +67,6 @@ pub fn eval_is_deterministic(model: &mut dyn Module, x: &Tensor) -> bool {
         let y = y.value().to_vec();
         y.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
     };
-
     let same = run(model) == run(model);
     model.train(true);
     same
@@ -78,10 +80,14 @@ pub struct ChannelDropout(pub Dropout);
 
 impl Module for ChannelDropout {
     fn forward<'t>(&self, x: Var<'t>) -> Var<'t> {
-        if !self.0.is_training() || self.0.p == 0.0 {
+        if !self.0.is_training() || self.0.p() == 0.0 {
             return x;
         }
         let mut shape = x.shape();
+        assert!(
+            shape.len() >= 2,
+            "ChannelDropout: input {shape:?}, needs [N, C, …]"
+        );
         shape[2..].fill(1); // [N, C, 1, 1]: broadcast over each channel
         x * x.tape().constant(self.0.mask(&shape))
     }
@@ -90,6 +96,9 @@ impl Module for ChannelDropout {
     }
     fn train(&mut self, on: bool) {
         self.0.train(on);
+    }
+    fn is_training(&self) -> bool {
+        self.0.is_training()
     }
 }
 // @end

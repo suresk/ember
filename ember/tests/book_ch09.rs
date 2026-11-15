@@ -44,6 +44,7 @@ fn nudges(
 }
 // @end
 
+// @listing tape-grad
 /// The tape's gradient of the same loss, with respect to `x`.
 fn tape_grad(
     f: impl for<'t> Fn(Var<'t>) -> Var<'t>,
@@ -60,6 +61,7 @@ fn tape_grad(
 fn add_to_batch(b: Var) -> Var {
     b.tape().constant(Tensor::arange(&[2, 3])) + b
 }
+// @end
 
 #[test]
 fn a_bias_read_twice() {
@@ -84,6 +86,18 @@ fn nudging_the_bias() {
     let b = t(&[10.0, 20.0, 30.0], &[3]);
     assert_eq!(nudges(add_to_batch, &b, &w23(), 0.25), [5.0, 7.0, 9.0]);
     assert_eq!(tape_grad(add_to_batch, &b, &w23()), [5.0, 7.0, 9.0]);
+    // @end
+}
+
+#[test]
+fn a_step_with_an_unsummed_gradient() {
+    // @listing unsummed-step
+    let b = t(&[10.0, 20.0, 30.0], &[3]);
+    let stepped = b.sub(&(&w23() * 0.1)); // the step with b̄ = w, [2, 3]
+    assert_eq!(stepped.shape(), [2, 3]); // a bias per row, and no panic
+    assert_eq!(stepped.to_vec(), [9.9, 19.8, 29.7, 9.6, 19.5, 29.4]);
+    let right = b.sub(&(&t(&[5.0, 7.0, 9.0], &[3]) * 0.1)); // b̄ summed: [3]
+    assert_eq!(right.to_vec(), [9.5, 19.3, 29.1]);
     // @end
 }
 
@@ -243,7 +257,7 @@ fn scrambled() -> Tensor {
 #[test]
 fn every_rule_against_nudges() {
     // @listing check-all
-    type Op = fn(Var) -> Var;
+    type Op = fn(Var<'_>) -> Var<'_>;
     let ops: [(&str, Op); 12] = [
         ("expand", |x| x.expand(&[3, 2, 3, 4])),
         ("sum", |x| x.sum(1, false)),
@@ -260,12 +274,13 @@ fn every_rule_against_nudges() {
     ];
     let x = scrambled(); // shape [2, 3, 4], no ties
     for (name, f) in ops {
+        // the temporary tape lives until the end of the statement
         let shape = f(Tape::new().constant(x.clone())).shape();
         let seed = Tensor::arange(&shape).add_scalar(1.0); // 1, 2, 3, ...
-        let (tape, nudged) = (tape_grad(f, &x, &seed), nudges(f, &x, &seed, 0.25));
+        let (taped, nudged) = (tape_grad(f, &x, &seed), nudges(f, &x, &seed, 0.25));
         assert!(
-            close(&tape, &nudged, 1e-4),
-            "{name}: {tape:?} vs {nudged:?}"
+            close(&taped, &nudged, 1e-4),
+            "{name}: {taped:?} vs {nudged:?}"
         );
     }
     // @end
@@ -285,10 +300,10 @@ fn centering_rows() {
     assert_eq!(grad(&grads, c), w23().to_vec());
     assert_eq!(grad(&grads, mean), [-6.0, -15.0]); // -w, summed along rows
     assert_eq!(grad(&grads, x), [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0]); // w - mean(w)
-    // @end
-    let from_mean = grads.get(x).unwrap().sub(&w23()); // the second contribution
+    let from_mean = grads.get(x).expect("a gradient").sub(&w23()); // via node 1
     assert_eq!(from_mean.to_vec(), [-2.0, -2.0, -2.0, -5.0, -5.0, -5.0]);
-    let x = Tensor::arange(&[2, 3]);
-    let nudged = nudges(|x| x - x.mean(1, true), &x, &w23(), 0.25);
+    let xs = Tensor::arange(&[2, 3]);
+    let nudged = nudges(|x| x - x.mean(1, true), &xs, &w23(), 0.25);
     assert!(close(&nudged, &[-1.0, 0.0, 1.0, -1.0, 0.0, 1.0], 1e-5));
+    // @end
 }

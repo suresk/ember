@@ -1,5 +1,5 @@
 //! Tests for the Chapter 8 challenges: `cargo test --test challenges_ch08`.
-use ember::{Gradients, Tape, Tensor, Var, nudge_grad};
+use ember::{Gradients, Tape, Tensor, Var};
 
 fn vector(xs: &[f32]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), &[xs.len()])
@@ -18,6 +18,10 @@ fn close(xs: &[f32], want: &[f32], tol: f32) -> bool {
     xs.len() == want.len() && xs.iter().zip(want).all(|(x, w)| (x - w).abs() <= tol)
 }
 
+// @challenge 6 7
+use ember::nudge_grad;
+
+// @challenge 1
 #[test]
 fn predict_the_gradient() {
     let tape = Tape::new();
@@ -28,6 +32,7 @@ fn predict_the_gradient() {
     assert_eq!(grad(&l.backward(), x), [0.0, -3.0, 10.0]); // 3x² - 3 + relu'
 }
 
+// @challenge 2
 #[test]
 fn abs_has_a_corner() {
     let tape = Tape::new();
@@ -37,8 +42,11 @@ fn abs_has_a_corner() {
     assert_eq!(d(y, x), [-1.0, 0.0, 1.0]);
     let h = 1e-3f32;
     assert_eq!((h.abs() - (-h).abs()) / (2.0 * h), 0.0); // the nudge at 0 sees 0
+    let relu = |v: f32| v.max(0.0); // for relu the nudge at 0 sees 1/2
+    assert_eq!((relu(h) - relu(-h)) / (2.0 * h), 0.5);
 }
 
+// @challenge 3
 #[test]
 fn leaky_relu_and_clamp() {
     let tape = Tape::new();
@@ -49,8 +57,12 @@ fn leaky_relu_and_clamp() {
     let c = x.clamp(0.0, 1.0);
     assert_eq!(c.value().to_vec(), [0.0, 0.0, 0.5, 1.0, 1.0]);
     assert_eq!(d(c, x), [0.0, 1.0, 1.0, 1.0, 0.0]); // the ends pass
+    let r = x.relu(); // relu is clamp(0, ∞) except at 0, where it passes nothing
+    assert_eq!(d(x.clamp(0.0, f32::INFINITY), x)[1], 1.0);
+    assert_eq!(d(r, x)[1], 0.0);
 }
 
+// @challenge 4
 #[test]
 fn softplus_stays_finite() {
     let tape = Tape::new();
@@ -78,6 +90,7 @@ fn softplus_stays_finite() {
     assert!(dn[2].is_nan()); // 1/∞ · ∞
 }
 
+// @challenge 5
 #[test]
 fn a_user_defined_operation() {
     let tape = Tape::new();
@@ -95,6 +108,8 @@ fn a_user_defined_operation() {
     assert_eq!(d(r, x), [-4.0, -0.5, -0.0625]);
     assert_eq!(r.op(), "rsqrt");
 }
+
+// @challenge 6
 
 /// Three rules with a bug each, and the points where a nudge check catches them.
 #[test]
@@ -128,15 +143,21 @@ fn find_the_bug() {
     assert_eq!(checks(sigmoid_x, &[0.0, 1.0]), [false, false]); // 0 vs 0.25
     assert_eq!(checks(tanh_1y, &[0.0, 1.0]), [true, false]); // 1 - 0 = 1 - 0²
     assert_eq!(checks(recip_sign, &[1.0, -2.0]), [false, false]);
-    assert_eq!(checks(recip_sign, &[1e9]), [true]); // ±1e-18: both about 0
+    // The tape says 1e-18, and the nudge measures exactly 0: 1e9 + 1e-3 is 1e9.
+    assert_eq!(checks(recip_sign, &[1e9]), [true]);
+    assert_eq!(nudge_grad(recip_sign, &vector(&[1e9]), 1e-3), [0.0]);
+    assert_eq!(1e9f32 + 1e-3, 1e9);
 }
 
+// @challenge 7
 /// GELU from the operations of Section 8: nine nodes after the input.
 fn gelu_composite(x: Var<'_>) -> Var<'_> {
     let k = (2.0f32 / std::f32::consts::PI).sqrt();
     let inner = (x + x * x * x * 0.044715) * k;
     x * 0.5 * (1.0 + inner.tanh())
 }
+
+// @challenge 7
 
 #[test]
 fn gelu_by_hand() {

@@ -2,6 +2,7 @@
 //! multi-head layer that runs several attentions side by side.
 
 use crate::autograd::tape::Var;
+use crate::children;
 use crate::nn::{Linear, Module};
 use crate::rng::Rng;
 use crate::tensor::Tensor;
@@ -18,14 +19,21 @@ pub fn causal_mask(t: usize) -> Tensor {
 // @listing attention
 /// For stacks `q`, `k` of shape `[N, T, d]`: each query's weights over the keys,
 /// `softmax(q·kᵀ / √d)`, with every key after the query masked out if `causal`.
+/// The causal mask assumes query `i` and key `i` are the same position.
 pub fn attention_weights<'t>(q: Var<'t>, k: Var<'t>, causal: bool) -> Var<'t> {
     let (t, d) = (q.shape()[1], q.shape()[2]);
     let scores = q.matmul(k.transpose(1, 2)).div_scalar((d as f32).sqrt());
-    let scores = match causal {
-        true => scores.masked_fill(&causal_mask(t), f32::NEG_INFINITY),
-        false => scores,
-    };
-    scores.softmax(2) // each row sums to 1
+    if !causal {
+        return scores.softmax(2); // each row sums to 1
+    }
+    assert_eq!(
+        k.shape()[1],
+        t,
+        "attention: causal needs as many keys as queries"
+    );
+    scores
+        .masked_fill(&causal_mask(t), f32::NEG_INFINITY)
+        .softmax(2)
 }
 
 /// Scaled dot-product attention: each query's weighted average of the values.
@@ -48,7 +56,7 @@ impl MultiHeadAttention {
     /// `[B, T, dim]` to `[B·heads, T, dim / heads]`: one stack entry per head.
     pub fn split<'t>(&self, x: Var<'t>) -> Var<'t> {
         let (s, h) = (x.shape(), self.heads);
-        let x = x.reshape(&[s[0], s[1], h, s[2] / h]); // [B, T, h, d_h]
+        let x = x.reshape(&[s[0], s[1], h, s[2] / h]); // a copy: chunk's piece
         let x = x.permute(&[0, 2, 1, 3]); // a view: [B, h, T, d_h]
         x.reshape(&[s[0] * h, s[1], s[2] / h]) // a copy: the view is strided
     }

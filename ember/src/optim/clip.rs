@@ -6,13 +6,14 @@ use crate::nn::Parameter;
 // @listing clip
 /// `torch.nn.utils.clip_grad_norm_`: if the L2 norm of all the gradients
 /// together is above `max_norm`, scale every gradient by max_norm/(norm + 1e-6).
-/// Returns the norm before clipping. Parameters without a gradient are skipped.
+/// Returns the norm before clipping; if it is not finite, skip the step.
+/// Parameters without a gradient are skipped.
 pub fn clip_grad_norm(params: &mut [&mut Parameter], max_norm: f32) -> f32 {
     let mut squares = 0.0f64;
     for p in params.iter() {
         let Some(g) = &p.grad else { continue };
         let g = g.as_slice().expect("clip_grad_norm: a contiguous gradient");
-        squares += g.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>();
+        squares += g.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>();
     }
     let norm = squares.sqrt() as f32;
     let scale = max_norm / (norm + 1e-6);

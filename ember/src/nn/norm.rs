@@ -29,8 +29,7 @@ pub struct LayerNorm {
 impl Module for LayerNorm {
     fn forward<'t>(&self, x: Var<'t>) -> Var<'t> {
         let (tape, shape, n) = (x.tape(), x.shape(), self.weight.value.numel());
-        let fits = shape.last() == Some(&n);
-        assert!(fits, "LayerNorm: input {shape:?}, {n} features");
+        assert_eq!(shape.last(), Some(&n), "LayerNorm: input {shape:?}");
         let x_hat = x.normalize(shape.len() - 1, self.eps);
         x_hat * tape.param(&self.weight) + tape.param(&self.bias)
     }
@@ -64,7 +63,6 @@ pub struct Running {
 // @end
 
 // @listing batch-norm
-
 /// Batch normalization of `[N, features]`: in training, each feature is
 /// normalized over the batch; in evaluation, with the running statistics.
 #[derive(Debug)]
@@ -146,12 +144,17 @@ impl Module for BatchNorm1d {
     fn train(&mut self, on: bool) {
         self.training = on;
     }
+    fn is_training(&self) -> bool {
+        self.training
+    }
+    // @hide
     fn named_buffers(&mut self) -> Vec<(String, &mut Tensor)> {
         let r = self.running.get_mut(); // `&mut self`: no run-time check
         let names = ["running_mean", "running_var", "num_batches_tracked"];
         let buffers = [&mut r.mean, &mut r.var, &mut r.batches];
         names.into_iter().map(String::from).zip(buffers).collect()
     }
+    // @show
     fn parameters(&mut self) -> Vec<&mut Parameter> {
         vec![&mut self.weight, &mut self.bias]
     }

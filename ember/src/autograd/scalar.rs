@@ -69,11 +69,6 @@ impl Value {
     }
     // @end
 
-    /// The node's address, which identifies it while any handle to it is alive.
-    pub(crate) fn id(&self) -> usize {
-        Rc::as_ptr(&self.0).addr()
-    }
-
     // @listing functions
     pub fn tanh(&self) -> Value {
         Value::from_op(math::tanh(self.data()), Op::Tanh(self.clone()))
@@ -84,7 +79,8 @@ impl Value {
     }
 
     pub fn relu(&self) -> Value {
-        Value::from_op(self.data().max(0.0), Op::Relu(self.clone()))
+        let x = self.data(); // not x.max(0.0), which turns NaN into 0
+        Value::from_op(if x < 0.0 { 0.0 } else { x }, Op::Relu(self.clone()))
     }
 
     pub fn powf(&self, p: f32) -> Value {
@@ -111,6 +107,11 @@ impl Value {
     // @end
 
     // @listing topo
+    /// The node's address, which identifies it while any handle to it is alive.
+    pub(crate) fn id(&self) -> usize {
+        Rc::as_ptr(&self.0).addr()
+    }
+
     /// Every node `self` depends on, each after all of its inputs; `self` is last.
     pub fn topo_order(&self) -> Vec<Value> {
         let mut seen = HashSet::new();

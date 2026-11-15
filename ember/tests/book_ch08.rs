@@ -1,5 +1,6 @@
 //! The examples printed in Chapter 8 of the guided edition: backward rules for the
 //! elementwise operations.
+// @listing helpers
 use ember::{Gradients, Tape, Tensor, Var};
 use std::f32::consts::{E, LN_2};
 
@@ -8,10 +9,12 @@ fn scalar(x: f32) -> Tensor {
     Tensor::from_vec(vec![x], &[])
 }
 
+/// A tensor of shape `[xs.len()]`.
 fn vector(xs: &[f32]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), &[xs.len()])
 }
 
+/// The gradient of `v`, flattened.
 fn grad(grads: &Gradients, v: Var) -> Vec<f32> {
     grads.get(v).expect("a gradient").to_vec()
 }
@@ -20,6 +23,7 @@ fn grad(grads: &Gradients, v: Var) -> Vec<f32> {
 fn close(xs: &[f32], want: &[f32], tol: f32) -> bool {
     xs.len() == want.len() && xs.iter().zip(want).all(|(x, w)| (x - w).abs() <= tol)
 }
+// @end
 
 #[test]
 fn subtraction_and_scalars() {
@@ -48,6 +52,8 @@ fn division() {
     let grads = q.sum_all().backward();
     assert_eq!(grad(&grads, a), [0.5, -0.25]); // 1/b
     assert_eq!(grad(&grads, b), [-0.75, -0.0625]); // -a/b²
+    let (a, b) = (tape.leaf(vector(&[1e20])), tape.leaf(vector(&[1e20])));
+    assert_eq!(grad(&a.div(b).sum_all().backward(), b), [-1e-20]); // b² is ∞
     // @end
 }
 
@@ -118,7 +124,10 @@ fn powers() {
     let d = grad(&root.backward(), x); // 0.5 / √x
     assert_eq!(d, [f32::INFINITY, 0.5, 0.35355338, 0.25]); // ∞ at 0
     let inv = x.powf(-1.0).sum_all();
-    assert_eq!(grad(&inv.backward(), x)[1..], [-1.0, -0.25, -0.0625]); // -1/x²
+    let d = grad(&inv.backward(), x); // -1/x²
+    assert_eq!(d, [f32::NEG_INFINITY, -1.0, -0.25, -0.0625]);
+    let one = x.powf(0.0).sum_all(); // x⁰ = 1, a constant
+    assert_eq!(grad(&one.backward(), x), [0.0; 4]); // not 0 · ∞ at 0
     // @end
 }
 
@@ -133,9 +142,9 @@ fn operators_on_vars() {
     let grads = y.sum_all().backward();
     assert_eq!(grad(&grads, x), [0.5, -0.75]); // w/2 - 1/x²
     assert_eq!(grad(&grads, w), [0.5, 1.0]); // x/2
-    // @end
-    let z = 1.0 - -x; // neg, then add_scalar
+    let z = 1.0 - -x; // Neg, then neg and add_scalar: 1 + x
     assert_eq!((z.value().to_vec(), z.op()), (vec![2.0, 3.0], "add_scalar"));
+    // @end
 }
 
 #[test]
@@ -151,7 +160,9 @@ fn used_more_than_once() {
     // @end
 }
 
-/// The two-layer computation of Section 8.7, with its four leaves.
+// @listing two-layers
+/// The two-layer computation of Section 8.7 on a given tape, with parameters
+/// `p = [w1, b1, w2, b2]`. Returns the loss and the four leaves.
 fn two_layers(tape: &Tape, p: [f32; 4]) -> (Var<'_>, [Var<'_>; 4]) {
     let x = tape.constant(scalar(1.5));
     let [w1, b1, w2, b2] = p.map(|v| tape.leaf(scalar(v)));
@@ -160,6 +171,7 @@ fn two_layers(tape: &Tape, p: [f32; 4]) -> (Var<'_>, [Var<'_>; 4]) {
     let l = (s - 1.0).powf(2.0);
     (l, [w1, b1, w2, b2])
 }
+// @end
 
 #[test]
 fn the_chain_rule_as_code() {
@@ -177,7 +189,7 @@ fn the_chain_rule_as_code() {
 
     // @listing chain-backward
     let grads = l.backward();
-    let g = |v: Var| grads.get(v).unwrap().item();
+    let g = |v: Var| grads.get(v).expect("a gradient").item();
     assert_eq!([g(s), g(h)], [-1.0, 0.125]);
     assert_eq!([g(w1), g(b1), g(w2), g(b2)], [0.1875, 0.125, -0.5, -0.25]);
     assert!(grads.get(x).is_none()); // a constant
@@ -241,13 +253,13 @@ fn nudges_agree_with_the_tape() {
     // @listing chain-nudge
     let p = [2.0, -1.0, -0.5, 1.0]; // w1, b1, w2, b2
     let loss = |i: usize, by: f32| {
-        let mut q = p;
+        let mut q = p; // a copy: [f32; 4] is Copy
         q[i] += by; // nudge parameter i
         let tape = Tape::new();
         two_layers(&tape, q).0.value().item()
     };
-    let h = 1e-3;
-    let slope = |i| (loss(i, h) - loss(i, -h)) / (2.0 * h);
+    let step = 1e-3;
+    let slope = |i| (loss(i, step) - loss(i, -step)) / (2.0 * step);
     let slopes: Vec<f32> = (0..4).map(slope).collect();
     assert!(close(&slopes, &[0.1875, 0.125, -0.5, -0.25], 1e-4));
     // @end
@@ -256,7 +268,7 @@ fn nudges_agree_with_the_tape() {
     let grads = l.backward();
     let exact: Vec<f32> = leaves
         .iter()
-        .map(|&v| grads.get(v).unwrap().item())
+        .map(|&v| grads.get(v).expect("a gradient").item())
         .collect();
     assert!(close(&slopes, &exact, 1e-4));
 }
@@ -297,4 +309,15 @@ fn saturation() {
     // @end
     assert_eq!(1.0f32.next_down(), 1.0 - 5.9604645e-8); // the f32 spacing below 1
     assert!((0.25 / ds[3] - 5505.0).abs() < 1.0); // from the rounded y
+}
+
+#[test]
+fn a_log_of_a_saturated_sigmoid() {
+    // @listing sigmoid-log
+    let tape = Tape::new();
+    let x = tape.leaf(scalar(20.0));
+    let loss = (1.0 - x.sigmoid()).ln().neg(); // -ln(1 - σ(x)), for a target of 0
+    assert_eq!(loss.value().item(), f32::INFINITY); // the true loss is about 20
+    assert!(grad(&loss.backward(), x)[0].is_nan()); // the true slope is about 1
+    // @end
 }

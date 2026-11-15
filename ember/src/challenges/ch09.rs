@@ -8,6 +8,7 @@ impl<'t> Var<'t> {
     /// A new axis of size 1 at position `dim`.
     pub fn unsqueeze(self, dim: usize) -> Var<'t> {
         let mut shape = self.shape();
+        assert!(dim <= shape.len(), "unsqueeze: axis {dim} of {shape:?}");
         shape.insert(dim, 1);
         self.reshape(&shape)
     }
@@ -30,8 +31,15 @@ impl<'t> Var<'t> {
     // @listing var
     /// The variance along `dim`: squared deviations from the mean, summed and
     /// divided by `n - correction`. Five nodes, each with its own rule.
+    ///
+    /// # Panics
+    /// If `correction` is not smaller than the length `n` of axis `dim`.
     pub fn var(self, dim: usize, keepdim: bool, correction: usize) -> Var<'t> {
         let n = self.shape()[dim];
+        assert!(
+            correction < n,
+            "var: correction {correction} for {n} elements"
+        );
         let d = self - self.mean(dim, true);
         (d * d).sum(dim, keepdim) / (n - correction) as f32
     }
@@ -41,17 +49,21 @@ impl<'t> Var<'t> {
     /// The tensors in `vars` joined along `dim`, as one node with one parent per
     /// tensor. Its rule cuts the gradient back into the pieces.
     pub fn cat(vars: &[Var<'t>], dim: usize) -> Var<'t> {
+        assert!(!vars.is_empty(), "cat: no Vars to join");
+        let tape = vars[0].tape;
+        let same = vars.iter().all(|v| std::ptr::eq(v.tape, tape));
+        assert!(same, "cat: Vars of two tapes");
         let values: Vec<Tensor> = vars.iter().map(|v| v.value()).collect();
         let sizes: Vec<usize> = values.iter().map(|x| x.shape()[dim]).collect();
         let y = Tensor::cat(&values, dim);
         let parents = vars.iter().map(|v| v.id).collect();
-        vars[0].tape.push("cat", y, parents, move |g| {
-            let mut start = 0;
-            let piece = |n: &usize| {
+        tape.push("cat", y, parents, move |g| {
+            let (mut pieces, mut start) = (Vec::new(), 0);
+            for &n in &sizes {
+                pieces.push(g.slice(dim, start, start + n, 1));
                 start += n;
-                g.slice(dim, start - n, start, 1)
-            };
-            sizes.iter().map(piece).collect()
+            }
+            pieces
         })
     }
     // @end
@@ -60,7 +72,9 @@ impl<'t> Var<'t> {
     /// Challenge 3.4's `repeat`, recorded. Its backward undoes each step of the
     /// forward: reshape, sum over the copies (`expand`'s rule), reshape.
     pub fn repeat(self, counts: &[usize]) -> Var<'t> {
-        let lead = counts.len() - self.shape().len();
+        let ndim = self.shape().len();
+        assert!(counts.len() >= ndim, "repeat: too few counts");
+        let lead = counts.len() - ndim;
         let mut shape = vec![1; lead];
         shape.extend(self.shape());
         let split: Vec<usize> = shape.iter().flat_map(|&n| [1, n]).collect();
@@ -97,11 +111,14 @@ impl<'t> Var<'t> {
         name: &'static str,
         f: impl Fn(&Tensor) -> Tensor + Copy + 'static,
     ) -> Var<'t> {
-        self.unary(name, f, move |x, _, g| {
+        let view = move |x: &Tensor| {
+            let y = f(x);
+            assert!(y.shares_storage(x), "{name}: not a view"); // when recorded
+            y
+        };
+        self.unary(name, view, move |x, _, g| {
             let ruler = Tensor::zeros(x.shape());
-            let read = f(&ruler);
-            assert!(read.shares_storage(&ruler), "{name}: not a view");
-            Tensor::scatter_add(x.shape(), &read.slots(), g)
+            Tensor::scatter_add(x.shape(), &f(&ruler).slots(), g)
         })
     }
     // @end
@@ -109,7 +126,8 @@ impl<'t> Var<'t> {
 
 // @listing lse
 /// Each lane's maximum `m` and `Σ e^(x - m)`, keeping the axis. The largest term
-/// of each sum is `e^0 = 1`, so nothing overflows.
+/// of each sum is `e^0 = 1`, so nothing overflows. A lane of all `-inf` gives NaN
+/// (`-inf - -inf`); Chapter 13's `Tensor::logsumexp` handles that case.
 fn shifted_sum(x: &Tensor, dim: usize) -> (Tensor, Tensor) {
     let m = x.max(dim, true);
     let s = x.sub(&m).exp().sum(dim, true);

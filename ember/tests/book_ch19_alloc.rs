@@ -56,6 +56,19 @@ fn allocations_per_batch() {
     let indices: Vec<usize> = (0..64).map(|i| i * 15).collect();
     let batched = allocations(|| drop(ds.get_batch(&indices)));
     let stacked = allocations(|| drop(PerExample(&ds).get_batch(&indices)));
-    assert_eq!((batched, stacked), (6, 273)); // for one batch of 64 (7 until Ch. 24)
+    // @hide
+    let batched = batched + usize::from(!is_contiguous_allocates());
+    // @show
+    assert_eq!((batched, stacked), (7, 273)); // for one batch of 64
     // @end
+}
+
+/// Whether `is_contiguous` allocates, as Chapter 2's does: it builds the
+/// row-major strides in a vector to compare with. Chapter 24's builds nothing,
+/// and this file's hidden lines add back what that saves, so that the test
+/// asserts this chapter's count before Chapter 24 and after it. Chapter 24's own
+/// test, `earlier_counts_now`, asserts the new counts.
+fn is_contiguous_allocates() -> bool {
+    let x = Tensor::zeros(&[2, 3]);
+    allocations(|| assert!(x.is_contiguous())) > 0
 }

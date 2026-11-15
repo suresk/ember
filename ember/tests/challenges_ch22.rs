@@ -1,9 +1,7 @@
 //! Tests for the Chapter 22 challenges.
 use ember::{
-    AvgPool2d, Conv2d, Flatten, GlobalAvgPool, Linear, MaxPool2d, Module, ReLU, Rng,
-    Sequential, Tape, Tensor, Tolerance, Window, conv_transpose2d, depthwise_conv2d,
-    eval_is_deterministic, gradcheck, pointwise, receptive_field,
-    with_channel_dropout,
+    Conv2d, Flatten, Linear, MaxPool2d, Module, ReLU, Rng, Sequential, Tape, Tensor,
+    Tolerance, Window, gradcheck,
 };
 
 #[path = "../examples/mnist_cnn.rs"]
@@ -18,6 +16,7 @@ fn count(model: &mut dyn Module) -> usize {
     model.parameters().iter().map(|p| p.value.numel()).sum()
 }
 
+// @challenge 1
 #[test]
 fn predict_conv_shapes() {
     // @listing predict-test
@@ -48,6 +47,9 @@ fn predict_conv_shapes() {
     // @end
 }
 
+// @challenge 2
+use ember::pointwise;
+
 #[test]
 fn one_by_one_is_linear() {
     // @listing pointwise-test
@@ -60,9 +62,18 @@ fn one_by_one_is_linear() {
     let a = pointwise(tape.constant(x.clone()), &linear).value();
     let c = conv.forward(tape.constant(x)).value();
     assert_eq!(a.shape(), [2, 4, 5, 5]);
-    assert!(a.allclose_rel(&c, 1e-6, 1e-5)); // one map, two routes
+    let tol = Tolerance {
+        atol: 1e-6,
+        rtol: 1e-5,
+        ..Tolerance::default()
+    };
+    let mut pairs = a.to_vec().into_iter().zip(c.to_vec()); // one map, two routes
+    assert!(a.shape() == c.shape() && pairs.all(|(a, c)| tol.ratio(a, c) <= 1.0));
     // @end
 }
+
+// @challenge 3
+use ember::{AvgPool2d, GlobalAvgPool};
 
 #[test]
 fn average_pooling() {
@@ -90,13 +101,16 @@ fn average_pooling() {
     assert_eq!(count(&mut gap), 80 + 1168 + 170); // 1,418 against 9,098
 }
 
+// @challenge 4
+use ember::receptive_field;
+
 #[test]
 fn receptive_field_of_the_cnn() {
     // @listing field-test
     let (conv, pool) = (Window::new(3, 1, 1), Window::new(2, 2, 0));
     assert_eq!(receptive_field(&[conv, pool, conv, pool]), 10);
     assert_eq!(receptive_field(&[conv, conv]), 5);
-    assert_eq!(receptive_field(&[conv; 13]), 27); // 13 layers to see a digit
+    assert_eq!(receptive_field(&[conv; 14]), 29); // 14 layers to see 28 pixels
     let mut rng = Rng::new(22);
     let two = Sequential::new(vec![
         Box::new(Conv2d::new(1, 2, conv, &mut rng)),
@@ -110,6 +124,25 @@ fn receptive_field_of_the_cnn() {
     let inside = |i: &usize| (2..=6).contains(&(i / 9)) && (2..=6).contains(&(i % 9));
     assert!(seen.len() == 25 && seen.iter().all(inside)); // rows, columns 2..=6
     // @end
+}
+
+// @challenge 5
+use ember::with_channel_dropout;
+
+/// The same bits from two forwards in evaluation mode; leaves the model in
+/// training mode. Challenge 21.4's `eval_is_deterministic`, so that this check
+/// doesn't need 21.4.
+fn eval_is_deterministic(model: &mut dyn Module, x: &Tensor) -> bool {
+    model.train(false);
+    let run = |model: &dyn Module| {
+        let tape = Tape::new();
+        let y = tape.no_grad(|| model.forward(tape.constant(x.clone())));
+        let y = y.value().to_vec();
+        y.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    };
+    let same = run(model) == run(model);
+    model.train(true);
+    same
 }
 
 #[test]
@@ -140,6 +173,9 @@ fn channel_dropout_in_the_cnn() {
     // @end
 }
 
+// @challenge 6
+use ember::depthwise_conv2d;
+
 #[test]
 fn depthwise() {
     // @listing depthwise-test
@@ -157,7 +193,13 @@ fn depthwise() {
     let (xv, kv) = (tape.constant(x.clone()), tape.constant(k.clone()));
     let a = depthwise_conv2d(xv, kv, win).value();
     let b = xv.conv2d(tape.constant(t(&full, &[c * 9, c])), win).value();
-    assert!(a.allclose_rel(&b, 1e-6, 1e-5));
+    let close = Tolerance {
+        atol: 1e-6,
+        rtol: 1e-5,
+        ..Tolerance::default()
+    };
+    let mut pairs = a.to_vec().into_iter().zip(b.to_vec());
+    assert!(a.shape() == b.shape() && pairs.all(|(a, b)| close.ratio(a, b) <= 1.0));
     let tol = Tolerance::default();
     let check = gradcheck(|v| depthwise_conv2d(v[0], v[1], win), &[x, k], tol);
     assert!(check.is_ok());
@@ -165,6 +207,9 @@ fn depthwise() {
     assert_eq!((dw + pw, full), (2_336, 18_432)); // separable: 7.9 times fewer
     // @end
 }
+
+// @challenge 7
+use ember::conv_transpose2d;
 
 #[test]
 fn transposed_convolution() {
@@ -190,4 +235,14 @@ fn transposed_convolution() {
         (up.shape(), back.shape()),
         (&[1, 1, 4, 4][..], &[2, 3, 7, 7][..])
     );
+}
+
+#[test]
+#[should_panic(expected = "conv_transpose2d: padding too large")]
+fn transposed_padding_too_large() {
+    // (1 − 1)·1 + 1 − 2·1 would go below zero in usize: a clear panic instead.
+    let tape = Tape::new();
+    let x = tape.constant(Tensor::zeros(&[1, 1, 1, 1]));
+    let w = tape.constant(Tensor::zeros(&[1, 1]));
+    conv_transpose2d(x, w, Window::new(1, 1, 1));
 }

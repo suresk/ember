@@ -34,11 +34,6 @@ impl Rng {
         (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32
     }
 
-    /// Uniform between `lo` and `hi`.
-    pub fn uniform_range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (hi - lo) * self.uniform()
-    }
-
     /// Uniform in [0, 1) with 53 bits, as many as an `f64` holds.
     fn uniform_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64

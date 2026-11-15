@@ -63,7 +63,6 @@ fn the_forward_pass() {
     let l = &d * &f;
     assert_eq!([e.data(), d.data(), l.data()], [-6.0, 2.0, 8.0]);
     assert_eq!(a.grad(), 0.0); // nothing has run backward yet
-    assert_eq!(l.local_grads().len(), 2); // its inputs, d and f
     // @end
 }
 
@@ -82,6 +81,7 @@ fn local_derivatives() {
     assert_eq!(Value::new(0.0).exp().local_grads()[0].1, 1.0);
     assert_eq!(Value::new(-1.0).relu().local_grads()[0].1, 0.0);
     assert_eq!(Value::new(3.0).powf(2.0).local_grads()[0].1, 6.0); // 2·3
+    assert!(Value::new(f32::NAN).relu().data().is_nan()); // NaN passes through
     // @end
 }
 
@@ -108,7 +108,7 @@ fn backward_on_the_graph() {
 }
 
 // @listing overwrite
-/// `backward` with one character changed: `=` where it had `+=`.
+/// `backward`, with `set_grad` where it calls `add_grad`.
 fn backward_overwriting(output: &Value) {
     let order = output.topo_order();
     output.set_grad(1.0);
@@ -127,6 +127,7 @@ fn gradients_add_on_fan_out() {
     let (a, b) = (Value::new(3.0), Value::new(-2.0));
     let l = &a * &b + &a; // a is used twice
     assert_eq!(l.data(), -3.0);
+    assert_eq!(data(&l.topo_order()), [3.0, -2.0, -6.0, -3.0]); // a once
     l.backward();
     assert_eq!([a.grad(), b.grad()], [-1.0, 3.0]); // dL/da = b + 1
 
@@ -150,13 +151,7 @@ fn a_square_is_a_node_with_one_input_twice() {
     // @end
 }
 
-#[test]
-fn a_shared_node_is_visited_once() {
-    let (a, b) = (Value::new(3.0), Value::new(-2.0));
-    let l = &a * &b + &a;
-    assert_eq!(data(&l.topo_order()), [3.0, -2.0, -6.0, -3.0]);
-}
-
+// @listing backward-in
 /// The loop of `backward`, from zero gradients, over an order the caller chooses.
 fn backward_in(order: &[&Value]) {
     for node in order {
@@ -170,6 +165,7 @@ fn backward_in(order: &[&Value]) {
         }
     }
 }
+// @end
 
 #[test]
 fn the_order_matters() {

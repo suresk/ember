@@ -1,8 +1,7 @@
 //! Tests for the Chapter 18 challenges.
 use ember::{
-    Adam, ConstantLr, CosineLr, CosineRestarts, InverseSqrt, LinearWarmup,
-    LrScheduler, NormWatch, OneCycle, Optimizer, Parameter, ReduceLrOnPlateau, Rng,
-    Sgd, Tensor, clip_grad_norm, clip_grad_value, toy,
+    Adam, ConstantLr, CosineLr, LinearWarmup, LrScheduler, Optimizer, Parameter, Rng,
+    Sgd, Tensor, clip_grad_norm, toy,
 };
 
 #[path = "../examples/spirals.rs"]
@@ -17,6 +16,7 @@ fn tensor(xs: &[f32]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), &[xs.len()])
 }
 
+// @challenge 1
 #[test]
 fn warmup_then_cosine_by_hand() {
     // @listing predict-test
@@ -25,6 +25,9 @@ fn warmup_then_cosine_by_hand() {
     assert!(close(&at, &[0.01, 0.1, 0.1, 0.0505, 0.00103], 1e-5));
     // @end
 }
+
+// @challenge 2
+use ember::clip_grad_value;
 
 #[test]
 fn clip_by_value() {
@@ -46,6 +49,9 @@ fn clip_by_value() {
     assert!((norm - 3f32.sqrt()).abs() < 1e-6);
 }
 
+// @challenge 3
+use ember::InverseSqrt;
+
 #[test]
 fn inverse_square_root() {
     // @listing isqrt-test
@@ -54,6 +60,9 @@ fn inverse_square_root() {
     assert!(close(&at, &[0.001, 0.05, 0.1, 0.05, 0.01], 1e-7));
     // @end
 }
+
+// @challenge 4
+use ember::CosineRestarts;
 
 #[test]
 fn cosine_with_restarts() {
@@ -72,6 +81,21 @@ fn cosine_with_restarts() {
 }
 
 #[test]
+#[should_panic(expected = "empty cycles")]
+fn restarts_need_growing_cycles() {
+    // mult 0 would make every cycle after the first 0 steps long: an endless loop.
+    let schedule = CosineRestarts {
+        first: 10,
+        mult: 0,
+        min_lr: 0.0,
+    };
+    schedule.lr(0.1, 10);
+}
+
+// @challenge 5
+use ember::OneCycle;
+
+#[test]
 fn one_cycle() {
     // @listing one-cycle-test
     let schedule = OneCycle { steps: 100 };
@@ -82,14 +106,28 @@ fn one_cycle() {
     let small = toy::spirals(25, 1.5, 0.05, &mut rng);
     let mut model = spirals::mlp(16, &mut rng);
     let mut opt = Adam::new(0.3);
-    let (losses, _) =
-        spirals::train_with(&mut model, &small, &mut opt, &schedule, (100, f32::MAX));
+    let (losses, _) = spirals::train_with(
+        &mut model,
+        &small,
+        &mut opt,
+        &schedule,
+        (100, f32::INFINITY),
+    );
     let below = losses.iter().position(|&l| l < 0.01).map(|i| i + 1);
     let worst = losses.iter().cloned().fold(0.0, f32::max);
     assert_eq!((below, (worst * 1000.0).round()), (Some(52), 695.0));
     // @end
     assert!((losses[99] - 0.00194).abs() < 2e-5);
 }
+
+#[test]
+#[should_panic(expected = "at least 4 steps")]
+fn one_cycle_needs_steps() {
+    OneCycle { steps: 0 }.lr(0.1, 0);
+}
+
+// @challenge 6
+use ember::ReduceLrOnPlateau;
 
 #[test]
 fn reduce_on_plateau() {
@@ -110,6 +148,9 @@ fn reduce_on_plateau() {
     // @end
 }
 
+// @challenge 7
+use ember::NormWatch;
+
 #[test]
 fn watching_the_norm() {
     // @listing watch-test
@@ -119,15 +160,14 @@ fn watching_the_norm() {
         let mut model = spirals::mlp(16, &mut rng);
         let mut opt = Adam::new(0.3);
         let schedule = LinearWarmup::new(warmup, ConstantLr);
-        let run = (30, f32::MAX);
+        let run = (30, f32::INFINITY);
         let (_, norms) =
             spirals::train_with(&mut model, &small, &mut opt, &schedule, run);
         let mut watch = NormWatch::new(10.0, 5);
         let flagged = norms.iter().map(|&n| watch.check(n));
         let steps: Vec<usize> = flagged
             .enumerate()
-            .filter(|f| f.1)
-            .map(|f| f.0 + 1)
+            .filter_map(|(i, flag)| flag.then_some(i + 1))
             .collect();
         (steps, norms[0], norms[1])
     };
@@ -140,4 +180,10 @@ fn watching_the_norm() {
         .map(|n| watch.check(n))
         .to_vec();
     assert_eq!(seen, [false, false, false, true, false, true]);
+}
+
+#[test]
+#[should_panic(expected = "a window of 0")]
+fn norm_watch_needs_a_window() {
+    NormWatch::new(10.0, 0);
 }

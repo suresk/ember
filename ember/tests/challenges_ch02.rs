@@ -5,6 +5,7 @@ fn floats(xs: &[usize]) -> Vec<f32> {
     xs.iter().map(|&x| x as f32).collect()
 }
 
+// @challenge 1
 #[test]
 fn predict_four_views() {
     let x = Tensor::arange(&[4, 6]);
@@ -32,12 +33,18 @@ fn predict_four_views() {
     assert!(!d.shares_storage(&x));
 }
 
+// @challenge 2
 #[test]
 fn unsqueeze_and_squeeze() {
     let x = Tensor::arange(&[2, 3]);
     let a = x.unsqueeze(0);
     assert_eq!(a.shape(), &[1, 2, 3]);
     assert!(a.is_contiguous() && a.shares_storage(&x));
+    // The strict test: the strides a fresh [1, 2, 3] or [2, 1, 3] tensor would have.
+    use ember::contiguous_strides;
+    assert_eq!(a.strides(), contiguous_strides(a.shape()));
+    let b = x.unsqueeze(1);
+    assert_eq!(b.strides(), contiguous_strides(b.shape()));
     assert_eq!(x.unsqueeze(1).shape(), &[2, 1, 3]);
     assert_eq!(x.unsqueeze(2).shape(), &[2, 3, 1]);
     assert_eq!(x.unsqueeze(2).to_vec(), x.to_vec());
@@ -54,6 +61,7 @@ fn squeeze_rejects_a_real_axis() {
     Tensor::arange(&[2, 3]).squeeze(0);
 }
 
+// @challenge 3
 #[test]
 fn diagonal_is_a_view() {
     let x = Tensor::arange(&[3, 3]);
@@ -72,6 +80,7 @@ fn diagonal_is_a_view() {
     );
 }
 
+// @challenge 4
 #[test]
 fn chunk_splits_into_views() {
     let parts = Tensor::arange(&[10]).chunk(0, 3);
@@ -87,6 +96,7 @@ fn chunk_splits_into_views() {
     assert!(cols.iter().all(|c| c.shares_storage(&x)));
 }
 
+// @challenge 5
 #[test]
 fn unfold_makes_sliding_windows() {
     let x = Tensor::arange(&[6]);
@@ -101,6 +111,7 @@ fn unfold_makes_sliding_windows() {
     assert_eq!(m.to_vec(), floats(&[0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 8, 9]));
 }
 
+// @challenge 6
 #[test]
 fn view_reshapes_without_copying_when_it_can() {
     let x = Tensor::arange(&[2, 3, 4]);

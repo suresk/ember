@@ -7,6 +7,7 @@
 //! cargo run --release --example mnist_mlp -- stats     the pixels' mean and std
 //! cargo run --release --example mnist_mlp -- loader    get vs get_batch, timed
 
+// @listing uses
 use ember::data::{self, DataError};
 use ember::{
     AdamW, Batch, CosineLr, DataLoader, Dataset, Linear, LinearWarmup, LrScheduler,
@@ -15,8 +16,10 @@ use ember::{
 };
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+// @end
 
-/// 784 pixels, 128 ReLU units, 10 logits: 101,770 numbers.
+// @listing model
+/// 784 pixels, 128 ReLU units, 10 logits: 101,770 parameters.
 pub fn mlp(rng: &mut Rng) -> Sequential {
     Sequential::new(vec![
         Box::new(Linear::new(784, 128, rng)),
@@ -38,14 +41,17 @@ pub fn step(
         loss.backward_into(&mut model.parameters());
         loss.value().item()
     };
-    clip_grad_norm(&mut model.parameters(), 1.0);
-    opt.step(&mut model.parameters());
+    let norm = clip_grad_norm(&mut model.parameters(), 1.0);
+    if norm.is_finite() {
+        opt.step(&mut model.parameters()); // skipped if the gradient overflowed
+    }
     loss
 }
+// @end
 
 // @listing accuracy
 /// The fraction of examples whose largest logit is their label, in batches of
-/// 1,000 without a tape's rules (Chapter 20 makes this a proper metric).
+/// 1,000 with recording off (Chapter 20 moves this into `ember::train`).
 pub fn accuracy(model: &impl Module, data: &impl Dataset) -> f32 {
     let mut right = 0;
     for (x, labels) in DataLoader::new(data, 1000).epoch() {
@@ -59,6 +65,7 @@ pub fn accuracy(model: &impl Module, data: &impl Dataset) -> f32 {
 }
 // @end
 
+// @listing train
 /// Five epochs of batches of 64, AdamW at 1e-3 with a warmup and a cosine.
 fn train(dir: &Path) -> Result<(), DataError> {
     let start = Instant::now();
@@ -67,7 +74,6 @@ fn train(dir: &Path) -> Result<(), DataError> {
     let mut rng = Rng::new(19);
     let mut model = mlp(&mut rng);
     println!("epoch     loss    train     test     time");
-    // @listing loop
     let mut loader = DataLoader::new(&train, 64).shuffle(rng).drop_last(true);
     let steps = 5 * loader.len(); // 5 epochs of 937 batches
     let schedule = LinearWarmup::new(100, CosineLr::new(steps - 100, 0.0));
@@ -82,18 +88,22 @@ fn train(dir: &Path) -> Result<(), DataError> {
             t += 1;
         }
         let (loss, secs) = (total / loader.len() as f32, start.elapsed());
-        let (a, b) = (accuracy(&model, &train), accuracy(&model, &test));
-        println!("{epoch:>5} {loss:>8.4} {a:>8.4} {b:>8.4} {secs:>8.2?}");
+        let train_acc = accuracy(&model, &train);
+        let test_acc = accuracy(&model, &test);
+        println!(
+            "{epoch:>5} {loss:>8.4} {train_acc:>8.4} {test_acc:>8.4} {secs:>8.2?}"
+        );
     }
-    // @end
     Ok(())
 }
+// @end
 
 /// The mean and standard deviation of `xs`, added up in `f64`.
 fn mean_std(xs: &[f32]) -> (f64, f64) {
     let n = xs.len() as f64;
     let mean = xs.iter().map(|&v| v as f64).sum::<f64>() / n;
-    let var = xs.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+    let var = xs.iter().map(|&v| (v as f64 - mean) * (v as f64 - mean));
+    let var = var.sum::<f64>() / n;
     (mean, var.sqrt())
 }
 

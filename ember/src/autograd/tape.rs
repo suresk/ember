@@ -40,7 +40,9 @@ pub(crate) struct Node {
 pub struct Tape {
     pub(crate) nodes: RefCell<Vec<Node>>,
     grad_enabled: Cell<bool>,
-    params: RefCell<Vec<(ParamId, usize)>>, // Chapter 11
+    // @hide
+    params: RefCell<Vec<(ParamId, usize)>>,
+    // @show
 }
 
 /// A handle to one value on a tape: the tape, and the value's index in it.
@@ -73,13 +75,12 @@ impl Tape {
     }
 
     fn input(&self, value: Tensor, op: &'static str, requires_grad: bool) -> Var<'_> {
-        let (parents, backward) = (Vec::new(), None);
         self.record(Node {
             value,
             op,
-            parents,
+            parents: Vec::new(),
             requires_grad,
-            backward,
+            backward: None,
         })
     }
     // @end
@@ -87,7 +88,9 @@ impl Tape {
     // @listing record
     /// Append `node` to the tape. The borrow of the `Vec` ends with the call.
     fn record(&self, node: Node) -> Var<'_> {
+        // @hide
         crate::profile::mark("forward", node.op); // Chapter 24
+        // @show
         let mut nodes = self.nodes.borrow_mut();
         nodes.push(node);
         let id = nodes.len() - 1;
@@ -130,7 +133,7 @@ impl Tape {
     // @listing walk
     /// The backward walk from node `id`, whose gradient is `seed`: every node from
     /// `id` down to 0, each passing its finished gradient to its parents.
-    pub(crate) fn backward_from(&self, id: usize, seed: Tensor) -> Gradients {
+    pub(crate) fn backward_from(&self, id: usize, seed: Tensor) -> Gradients<'_> {
         let nodes = self.nodes.borrow();
         let mut grads: Vec<Option<Tensor>> = vec![None; id + 1];
         grads[id] = Some(seed);
@@ -139,14 +142,19 @@ impl Tape {
                 (Some(g), Some(rule)) => rule(g), // the chain rule, for one node
                 _ => continue, // not on a path to the output, or nothing to pass
             };
+            // @hide
+            check_gradients(&nodes, i, &to_parents); // Chapter 9
+            // @show
             for (&p, g) in nodes[i].parents.iter().zip(to_parents) {
                 if nodes[p].requires_grad {
                     accumulate(&mut grads[p], g);
                 }
             }
+            // @hide
             crate::profile::mark("backward", nodes[i].op); // Chapter 24
+            // @show
         }
-        Gradients { grads }
+        Gradients { tape: self, grads }
     }
     // @end
 
@@ -161,15 +169,23 @@ impl Tape {
     /// but keep no backward rules, and nothing they produce requires a gradient.
     pub fn no_grad<R>(&self, f: impl FnOnce() -> R) -> R {
         let was = self.grad_enabled.replace(false);
-        let _restore = Restore(&self.grad_enabled, was); // even if `f` panics
+        let _restore = Restore {
+            flag: &self.grad_enabled,
+            was,
+        }; // dropped when `no_grad` returns or unwinds
         f()
     }
 }
 
-struct Restore<'a>(&'a Cell<bool>, bool); // the flag, and the value to restore
+/// Puts `was` back into `flag` when dropped.
+struct Restore<'a> {
+    flag: &'a Cell<bool>,
+    was: bool,
+}
+
 impl Drop for Restore<'_> {
     fn drop(&mut self) {
-        self.0.set(self.1);
+        self.flag.set(self.was);
     }
 }
 // @end
@@ -179,6 +195,27 @@ impl Default for Tape {
         Tape::new()
     }
 }
+
+// @listing check-gradients
+/// Panic unless node `i`'s rule returned one gradient per parent, each in its
+/// parent's shape. A wrong shape would otherwise pass unnoticed: `accumulate`
+/// stores a slot's first gradient as it is, and broadcasts any later one.
+fn check_gradients(nodes: &[Node], i: usize, grads: &[Tensor]) {
+    let (op, parents) = (nodes[i].op, &nodes[i].parents);
+    let (m, n) = (grads.len(), parents.len());
+    assert!(
+        m == n,
+        "{op}: the rule returned {m} gradients for {n} parents"
+    );
+    for (k, (&p, g)) in parents.iter().zip(grads).enumerate() {
+        let (got, want) = (g.shape(), nodes[p].value.shape());
+        assert!(
+            got == want,
+            "{op}: the gradient for parent {k} has shape {got:?}, not {want:?}"
+        );
+    }
+}
+// @end
 
 // @listing accumulate
 /// Add `g` into a gradient slot: gradients from several consumers add up.
@@ -287,10 +324,14 @@ impl<'t> Var<'t> {
     // @listing backward
     /// The gradient of `self`, which must hold exactly one number, with respect to
     /// every node it depends on that requires a gradient.
-    pub fn backward(self) -> Gradients {
+    pub fn backward(self) -> Gradients<'t> {
         let shape = self.shape();
         let n: usize = shape.iter().product();
         assert_eq!(n, 1, "backward: the output has shape {shape:?}");
+        assert!(
+            self.requires_grad(),
+            "backward: the output requires no gradient"
+        );
         let seed = Tensor::from_vec(vec![1.0], &shape); // dL/dL = 1
         self.tape.backward_from(self.id, seed)
     }
@@ -298,14 +339,18 @@ impl<'t> Var<'t> {
 }
 
 // @listing gradients
-/// The result of a backward pass: one gradient slot per node, empty for nodes that
-/// don't require a gradient or don't lead to the output.
-pub struct Gradients {
+/// The result of a backward pass on `tape`: one gradient slot per node, empty for
+/// nodes that don't require a gradient or don't lead to the output.
+pub struct Gradients<'t> {
+    pub(crate) tape: &'t Tape,
     pub(crate) grads: Vec<Option<Tensor>>,
 }
 
-impl Gradients {
-    pub fn get(&self, var: Var<'_>) -> Option<&Tensor> {
+impl<'t> Gradients<'t> {
+    /// The gradient of `var`, which must be on the tape these gradients came from.
+    pub fn get(&self, var: Var<'t>) -> Option<&Tensor> {
+        let same_tape = std::ptr::eq(self.tape, var.tape);
+        assert!(same_tape, "Gradients::get: a Var of another tape");
         self.grads.get(var.id).and_then(Option::as_ref)
     }
 }
@@ -314,7 +359,7 @@ impl Gradients {
 // Chapter 11: parameters on the tape.
 impl Tape {
     // @listing param
-    /// Put a parameter's value on the tape as a leaf, and write down which node
+    /// Put a parameter's value on the tape as a leaf, and record which node
     /// holds it. The value is shared, not copied, and the parameter isn't borrowed.
     pub fn param(&self, p: &Parameter) -> Var<'_> {
         let var = self.input(p.value.clone(), "param", true);

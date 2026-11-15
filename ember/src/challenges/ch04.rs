@@ -28,7 +28,7 @@ impl Tensor {
         );
         let d = self.sub(&self.mean(dim, true)); // keepdim, so it broadcasts back
         let ss = d.mul(&d).sum(dim, keepdim);
-        ss.mul_scalar(1.0 / (n - correction) as f32)
+        &ss / (n - correction) as f32 // a true division: one rounding
     }
     // @end
 
@@ -64,12 +64,12 @@ impl Tensor {
     pub fn cumsum(&self, dim: usize) -> Tensor {
         let running = |lane: &[f32]| -> Vec<f32> {
             let mut acc = 0.0f64;
-            lane.iter()
-                .map(|&x| {
-                    acc += x as f64;
-                    acc as f32
-                })
-                .collect()
+            let mut out = Vec::with_capacity(lane.len());
+            for &x in lane {
+                acc += x as f64;
+                out.push(acc as f32);
+            }
+            out
         };
         let data: Vec<f32> = self.lanes(dim, running).concat();
         // The data is laid out with `dim` moved to the end; move it back.
@@ -88,7 +88,10 @@ impl Tensor {
     /// `ln(1 + e^x)`, computed as `max(x, 0) + ln(1 + e^(-|x|))` so that e^x never
     /// overflows.
     pub fn softplus(&self) -> Tensor {
-        self.map(|x| x.max(0.0) + math::ln_1p(math::exp(-x.abs())))
+        // A comparison, not `f32::max`, for the reason in Section 4.8's NaN note.
+        self.map(|x| {
+            (if x > 0.0 { x } else { 0.0 }) + math::ln_1p(math::exp(-x.abs()))
+        })
     }
     // @end
 }

@@ -45,6 +45,10 @@ pub struct CosineRestarts {
 }
 impl LrScheduler for CosineRestarts {
     fn lr(&self, base: f32, step: usize) -> f32 {
+        assert!(
+            self.first > 0 && self.mult > 0,
+            "CosineRestarts: empty cycles"
+        );
         let (mut t, mut len) = (step, self.first);
         while t >= len {
             t -= len; // skip whole cycles
@@ -66,6 +70,10 @@ pub struct OneCycle {
 }
 impl LrScheduler for OneCycle {
     fn lr(&self, base: f32, step: usize) -> f32 {
+        assert!(
+            self.steps >= 4,
+            "OneCycle: at least 4 steps, for both phases"
+        );
         let base = base as f64;
         let (start, end) = (base / 25.0, base / 25.0 / 1e4);
         let peak = 0.3 * self.steps as f64 - 1.0; // the step at the top
@@ -98,13 +106,12 @@ pub struct ReduceLrOnPlateau {
 }
 impl ReduceLrOnPlateau {
     pub fn new(factor: f32, patience: usize) -> ReduceLrOnPlateau {
-        let (best, bad, threshold) = (f32::INFINITY, 0, 1e-4);
         ReduceLrOnPlateau {
             factor,
             patience,
-            threshold,
-            best,
-            bad,
+            threshold: 1e-4, // PyTorch's default
+            best: f32::INFINITY,
+            bad: 0,
         }
     }
     /// Record one value of the metric; returns whether the rates were cut.
@@ -137,7 +144,9 @@ pub struct NormWatch {
     recent: Vec<f32>,
 }
 impl NormWatch {
+    /// Panics if `window` is 0.
     pub fn new(factor: f32, window: usize) -> NormWatch {
+        assert!(window > 0, "NormWatch: a window of 0 norms");
         let recent = Vec::with_capacity(window);
         NormWatch {
             factor,

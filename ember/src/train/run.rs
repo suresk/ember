@@ -47,17 +47,24 @@ pub fn train_epoch<D: Dataset + ?Sized>(
 
 // @listing evaluate
 /// The mean cross-entropy and the accuracy of `model` over one pass of
-/// `loader`, in evaluation mode, with no backward rules recorded.
+/// `loader`, with no backward rules recorded.
+// @hide
+/// The model is in evaluation mode for the pass (Chapter 21).
+// @show
 pub fn evaluate<D: Dataset + ?Sized>(
     model: &mut dyn Module,
     loader: &mut DataLoader<'_, D>,
 ) -> (f32, f32) {
-    let model = EvalMode::new(model); // back in training mode when dropped
+    // @hide
+    let model = EvalMode::new(model); // its earlier mode again when dropped
+    // @show
     let (mut loss, mut right) = (Average::new(), Average::new());
     for (x, labels) in loader.epoch() {
         let tape = Tape::new(); // one per batch, dropped at the end of it
-        let logits = tape.no_grad(|| model.forward(tape.constant(x)));
-        let l = tape.no_grad(|| cross_entropy(logits, &labels).value().item());
+        let (logits, l) = tape.no_grad(|| {
+            let logits = model.forward(tape.constant(x));
+            (logits, cross_entropy(logits, &labels).value().item())
+        });
         loss.add(l, labels.len());
         right.add(accuracy(&logits.value(), &labels), labels.len());
     }
@@ -67,23 +74,28 @@ pub fn evaluate<D: Dataset + ?Sized>(
 
 // @listing eval-mode
 /// A model switched to evaluation mode for as long as this guard lives. It
-/// derefs to the model, and switches it back to training mode when dropped.
-pub struct EvalMode<'m>(&'m mut dyn Module);
+/// derefs to the model, and puts back the mode it found when dropped.
+#[must_use = "the model goes back to its earlier mode when the guard is dropped"]
+pub struct EvalMode<'m> {
+    model: &'m mut dyn Module,
+    was: bool, // the mode to restore
+}
 impl<'m> EvalMode<'m> {
     pub fn new(model: &'m mut dyn Module) -> EvalMode<'m> {
+        let was = model.is_training();
         model.train(false);
-        EvalMode(model)
+        EvalMode { model, was }
     }
 }
 impl<'m> Deref for EvalMode<'m> {
     type Target = dyn Module + 'm;
     fn deref(&self) -> &(dyn Module + 'm) {
-        self.0
+        self.model
     }
 }
 impl Drop for EvalMode<'_> {
     fn drop(&mut self) {
-        self.0.train(true); // also when a panic unwinds through the guard
+        self.model.train(self.was); // also when a panic unwinds through the guard
     }
 }
 // @end

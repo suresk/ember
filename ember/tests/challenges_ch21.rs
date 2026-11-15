@@ -1,9 +1,8 @@
 //! Tests for the Chapter 21 challenges.
 use ember::data::{MNIST_MEAN, MNIST_STD};
 use ember::{
-    Adam, ChannelDropout, DropConnect, Dropout, Frozen, Linear, Module, Parameter,
-    Residual, Rng, Sequential, Tape, Tensor, Var, eval_is_deterministic, every_mask,
-    mc_dropout, toy, train_step,
+    Adam, Dropout, Linear, Module, Parameter, Rng, Sequential, Tape, Tensor, Var,
+    toy, train_step,
 };
 
 #[path = "../examples/mnist_train.rs"]
@@ -23,6 +22,7 @@ fn round(x: f32, places: i32) -> f32 {
     (x * s).round() / s
 }
 
+// @challenge 1
 #[test]
 fn predict_dropout_statistics() {
     // @listing predict-test
@@ -39,6 +39,7 @@ fn predict_dropout_statistics() {
     // @end
 }
 
+// @challenge 2
 #[test]
 fn dropout_on_the_pixels() {
     // @listing pixels-test
@@ -53,6 +54,9 @@ fn dropout_on_the_pixels() {
     assert_eq!(names, ["1.weight", "1.bias", "3.weight", "3.bias"]);
     // @end
 }
+
+// @challenge 3
+use ember::mc_dropout;
 
 #[test]
 fn monte_carlo_dropout() {
@@ -78,6 +82,9 @@ fn monte_carlo_dropout() {
     // @end
 }
 
+// @challenge 6
+use ember::DropConnect;
+
 #[test]
 fn drop_connect() {
     // @listing drop-connect-test
@@ -96,6 +103,7 @@ fn drop_connect() {
     // @end
 }
 
+// @challenge 4
 /// A composite that forgets to pass `train` on to its child.
 struct Forgetful(Sequential);
 
@@ -107,6 +115,9 @@ impl Module for Forgetful {
         self.0.parameters()
     }
 }
+
+// @challenge 4
+use ember::{Frozen, Residual, eval_is_deterministic};
 
 #[test]
 fn a_module_that_ignores_train() {
@@ -121,6 +132,9 @@ fn a_module_that_ignores_train() {
     // @end
 }
 
+// @challenge 5
+use ember::ChannelDropout;
+
 #[test]
 fn channel_dropout() {
     // @listing channel-test
@@ -133,6 +147,20 @@ fn channel_dropout() {
     assert_eq!(planes[1..4], [[0.; 4], [0.; 4], [0.; 4]]); // three dropped whole
     assert_eq!(planes[4..], [[32., 34., 36., 38.], [40., 42., 44., 46.]]);
     // @end
+    let flat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop.forward(Tape::new().constant(Tensor::zeros(&[6])));
+    }));
+    assert!(flat.is_err()); // a 1-D input has no channels: a clear panic
+}
+
+// @challenge 7
+use ember::every_mask;
+
+/// The same shape, and every pair within `tol` (Challenge 1.7's `allclose`, so
+/// that this check doesn't need 1.7).
+fn allclose(a: &Tensor, b: &Tensor, tol: f32) -> bool {
+    let mut pairs = a.to_vec().into_iter().zip(b.to_vec());
+    a.shape() == b.shape() && pairs.all(|(x, y)| (x - y).abs() <= tol)
 }
 
 #[test]
@@ -151,9 +179,9 @@ fn the_average_over_every_mask() {
         log_p = log_p.add(&weighted(l.log_softmax(1)));
     }
     let eval = logits(hidden.clone()); // dropout off: no mask, no scaling
-    assert!(z.allclose(&eval, 1e-6)); // the mean of the logits, exactly
+    assert!(allclose(&z, &eval, 1e-6)); // the mean of the logits, exactly
     let geometric = log_p.softmax(1); // exp, then normalize to a sum of 1
-    assert!(geometric.allclose(&eval.softmax(1), 1e-6)); // exactly, too
+    assert!(allclose(&geometric, &eval.softmax(1), 1e-6)); // exactly, too
     assert_eq!(round(p.get(&[0, 0]), 4), 0.3509); // the arithmetic mean differs:
     assert_eq!(round(eval.softmax(1).get(&[0, 0]), 4), 0.3523); // softmax of eval
     // @end

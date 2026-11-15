@@ -2,8 +2,8 @@
 //! its loops, output sizes, im2col and its adjoint col2im, the layer, max pooling,
 //! shifts, and a small CNN.
 use ember::{
-    AdamW, Conv2d, MaxPool2d, Module, Rng, Tape, Tensor, Tolerance, Window, accuracy,
-    gradcheck, train_step,
+    AdamW, Conv2d, Flatten, MaxPool2d, Module, Rng, Tape, Tensor, Tolerance, Window,
+    accuracy, gradcheck, train_step,
 };
 
 #[path = "../examples/mnist_cnn.rs"]
@@ -19,22 +19,29 @@ fn t(xs: &[f32], shape: &[usize]) -> Tensor {
 // @listing definition
 /// The definition, loop by loop: `x` is `[N, C, H, W]` and `w` holds `C_out`
 /// kernels as PyTorch stores them, `[C_out, C, k, k]`. Output pixel `(i, j)` of
-/// channel `o` is the sum of a window of `x` times kernel `o`, entry by entry.
+/// channel `o` is the sum of a window of `x` times kernel `o`, entry by entry;
+/// an entry in the padding (`input` gives `None`) adds nothing.
 fn correlate(x: &Tensor, w: &Tensor, win: Window) -> Tensor {
-    let ([n, c, h, wd], [c_out, k]) = (dims(x), [w.shape()[0], win.size]);
+    let [n, c, h, wd] = dims(x);
+    let (c_out, k) = (w.shape()[0], win.size);
+    assert_eq!(
+        w.shape(),
+        [c_out, c, k, k],
+        "correlate: kernels for {win:?}"
+    );
     let (ho, wo) = (win.out(h), win.out(wd));
-    let mut y = vec![0.0; n * c_out * ho * wo];
-    let mut at = 0;
+    let mut y = Vec::with_capacity(n * c_out * ho * wo); // row-major output
     for b in 0..n {
         for o in 0..c_out {
-            for (i, j) in (0..ho).flat_map(|i| (0..wo).map(move |j| (i, j))) {
-                for (ch, dy, dx) in kernel_offsets(c, k) {
-                    let p = (win.input(i, dy, h), win.input(j, dx, wd));
-                    if let (Some(py), Some(px)) = p {
-                        y[at] += x.get(&[b, ch, py, px]) * w.get(&[o, ch, dy, dx]);
-                    }
+            for i in 0..ho {
+                for j in 0..wo {
+                    let reads = kernel_offsets(c, k).filter_map(|(ch, dy, dx)| {
+                        let py = win.input(i, dy, h)?;
+                        let px = win.input(j, dx, wd)?;
+                        Some(x.get(&[b, ch, py, px]) * w.get(&[o, ch, dy, dx]))
+                    });
+                    y.push(reads.sum());
                 }
-                at += 1;
             }
         }
     }
@@ -114,7 +121,7 @@ fn the_im2col_matrix() {
     let padded = x.im2col(Window::new(3, 1, 1)); // 3 × 3, padding 1
     assert_eq!(padded.shape(), [16, 9]);
     let corner = padded.select(0, 0).to_vec(); // the window at the top left
-    assert_eq!(corner, [0., 0., 0., 0., 0., 1., 0., 4., 5.]);
+    assert_eq!(corner, [0., 0., 0., 0., 0., 1., 0., 4., 5.]); // entry 4: pixel 0
     // @end
 }
 
@@ -150,8 +157,14 @@ fn convolution_as_one_product() {
     let y = layer.forward(tape.constant(x.clone())).value();
     assert_eq!(y.shape(), [2, 4, 3, 3]); // ⌊(5 + 2 − 3)/2⌋ + 1, ⌊(6 + 2 − 3)/2⌋ + 1
     let want = correlate(&x, &torch_w, win).add(&bias.reshape(&[4, 1, 1]));
-    assert!(y.allclose_rel(&want, 1e-5, 1e-5));
-    assert_eq!(tape.len(), 9); // 4 for the product, 3 to reshape, 2 for the bias
+    let tol = Tolerance {
+        atol: 1e-5,
+        rtol: 1e-5,
+        ..Tolerance::default()
+    };
+    let mut pairs = y.to_vec().into_iter().zip(want.to_vec());
+    assert!(pairs.all(|(a, b)| tol.ratio(a, b) <= 1.0)); // Section 10.5's test
+    assert_eq!(tape.len(), 9); // 4 for the product, 2 to reorder, 3 for the bias
     // @end
 }
 
@@ -318,31 +331,36 @@ fn the_cnn() {
     assert_eq!(784 * 128 + 128 * 10, 101_632); // the MLP's
 }
 
-/// `n` synthetic 28 × 28 digits: class 0 a horizontal bar, class 1 a vertical
-/// one, each 3 pixels wide and 14 long, at a random place.
+// @listing bars
+/// `n` flat 28 × 28 images of 1s on 0s, labels 0, 1, 0, 1, …: class 0 a
+/// horizontal bar, class 1 a vertical one, 14 pixels long and 3 wide. Per
+/// image, `a` (from 2 to 13) is where it starts along, then `b` (1 to 23) across.
 fn bars(n: usize, rng: &mut Rng) -> (Tensor, Vec<usize>) {
     let mut x = vec![0.0; n * 784];
     let labels: Vec<usize> = (0..n).map(|i| i % 2).collect();
     for (image, &label) in x.as_chunks_mut::<784>().0.iter_mut().zip(&labels) {
-        let (a, b) = (rng.below(12) + 2, rng.below(23) + 1); // where the bar starts
-        for (along, across) in (0..14).flat_map(|i| (0..3).map(move |j| (i, j))) {
-            let (y, x) = if label == 0 {
-                (b + across, a + along)
-            } else {
-                (a + along, b + across)
-            };
-            image[y * 28 + x] = 1.0;
+        let (a, b) = (rng.below(12) + 2, rng.below(23) + 1); // a first
+        for along in a..a + 14 {
+            for across in b..b + 3 {
+                let (row, col) = if label == 0 {
+                    (across, along)
+                } else {
+                    (along, across)
+                };
+                image[row * 28 + col] = 1.0;
+            }
         }
     }
     (Tensor::from_vec(x, &[n, 784]), labels)
 }
+// @end
 
 #[test]
 fn the_cnn_learns_bars() {
     // @listing bars-test
     let mut rng = Rng::new(22);
     let mut model = cnn(&mut rng);
-    let batch = bars(8, &mut rng); // four of each, at random places
+    let batch = bars(8, &mut rng); // drawn after the model, from the same rng
     let mut opt = AdamW::new(3e-3);
     let mut step = || train_step(&mut model, &batch, &mut opt, 1.0);
     let losses: Vec<f32> = (0..5).map(|_| (step() * 1e4).round() / 1e4).collect();
@@ -352,6 +370,33 @@ fn the_cnn_learns_bars() {
     let logits = tape.no_grad(|| model.forward(tape.constant(x)));
     assert_eq!(accuracy(&logits.value(), &labels), 0.875); // seven of eight
     // @end
+}
+
+#[test]
+#[should_panic(expected = "Window: 28 pixels for Window { size: 3, stride: 0")]
+fn a_window_literal_needs_a_stride() {
+    Window {
+        size: 3,
+        stride: 0,
+        padding: 1,
+    }
+    .out(28);
+}
+
+#[test]
+#[should_panic(expected = "conv2d: 18 weight rows for 3 channels")]
+fn conv2d_checks_the_weight_rows() {
+    let tape = Tape::new();
+    let x = tape.constant(Tensor::zeros(&[1, 3, 5, 5]));
+    let w = tape.constant(Tensor::zeros(&[18, 4])); // 3·3·3 = 27 rows needed
+    x.conv2d(w, Window::new(3, 1, 1));
+}
+
+#[test]
+fn flatten_takes_an_empty_batch() {
+    let tape = Tape::new();
+    let x = tape.constant(Tensor::zeros(&[0, 8, 7, 7]));
+    assert_eq!(Flatten.forward(x).shape(), [0, 392]);
 }
 
 #[test]

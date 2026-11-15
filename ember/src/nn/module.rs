@@ -20,6 +20,7 @@ pub trait Module {
             p.grad = None;
         }
     }
+    // @hide
 
     /// Chapter 20: every parameter with a name, by default its position.
     fn named_parameters(&mut self) -> Vec<(String, &mut Parameter)> {
@@ -31,10 +32,18 @@ pub trait Module {
     /// that behave differently in the two, and composites, override it.
     fn train(&mut self, _on: bool) {}
 
+    /// Chapter 21: `false` once `train(false)` reached a module with a mode.
+    /// Overridden by the same modules as `train`; a composite reports `false`
+    /// if any of its children does.
+    fn is_training(&self) -> bool {
+        true
+    }
+
     /// Chapter 23: state that is saved but not trained, such as batch norm's
     /// running statistics, with names. Most modules have none.
     fn named_buffers(&mut self) -> Vec<(String, &mut Tensor)> {
         Vec::new()
     }
+    // @show
 }
 // @end

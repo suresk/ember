@@ -12,12 +12,14 @@
 //! cargo run --release --example mnist_train -- dropout 30  the same, 30 epochs
 
 use ember::data::{self, DataError};
-use ember::train::{self, strip_prefix, tensor_to_u64, u64_to_tensor, with_prefix};
+use ember::train::{
+    self, StateReader, strip_prefix, tensor_to_u64, u64_to_tensor, with_prefix,
+};
 use ember::{
-    AdamW, CheckpointError, CosineLr, DataLoader, Dataset, Dropout, Linear,
-    LinearWarmup, LrScheduler, Module, ReLU, Rng, Sequential, StateDict, Stateful,
-    Tape, Tensor, base_lrs, cross_entropy, evaluate, load_state_dict, random_split,
-    state_dict, train_epoch, train_step,
+    AdamW, CheckpointError, ConstantLr, CosineLr, DataLoader, Dataset, Dropout,
+    Linear, LinearWarmup, LrScheduler, Module, ReLU, Rng, Sequential, StateDict,
+    Stateful, Tape, Tensor, base_lrs, cross_entropy, evaluate, load_state_dict,
+    random_split, state_dict, train_epoch, train_step,
 };
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -77,34 +79,43 @@ pub fn checkpoint(
     state.insert("rng".into(), u64_to_tensor(at.rng.state()));
     state
 }
-// @end
 
-// @listing restore
 /// Load a checkpoint made by `checkpoint` into a model and an optimizer built
-/// the same way, and return the progress it saved.
+/// the same way, and return the progress it saved. Nothing changes on an error.
 pub fn restore(
     model: &mut dyn Module,
     opt: &mut dyn Stateful,
     state: &StateDict,
 ) -> Result<Progress, CheckpointError> {
+    let at = progress(state)?; // checked before anything changes
+    let before = state_dict(model); // shares the buffers: no copy
     load_state_dict(model, &strip_prefix("model", state))?;
-    opt.load_state_dict(&model.parameters(), &strip_prefix("optim", state))?;
-    let get = |name: &str| {
-        let missing = vec![name.to_string()];
-        let keys = CheckpointError::Keys {
-            missing,
-            unexpected: vec![],
-        };
-        state.get(name).ok_or(keys)
-    };
-    Ok(Progress {
-        step: get("step")?.item() as usize,
-        epoch: get("epoch")?.item() as usize,
-        best: get("best")?.item(),
-        rng: Rng::new(tensor_to_u64(get("rng")?)),
-    })
+    let optim = strip_prefix("optim", state);
+    if let Err(e) = opt.load_state_dict(&model.parameters(), &optim) {
+        load_state_dict(model, &before).expect("the model's own state fits");
+        return Err(e);
+    }
+    Ok(at)
 }
 // @end
+
+/// The four progress entries, the only names in `state` without a dot.
+fn progress(state: &StateDict) -> Result<Progress, CheckpointError> {
+    let own = state.iter().filter(|(name, _)| !name.contains('.'));
+    let own: StateDict = own.map(|(n, t)| (n.clone(), t.clone())).collect();
+    let mut reader = StateReader::new(&own);
+    let step = reader.need("step", &[])?.item() as usize;
+    let epoch = reader.need("epoch", &[])?.item() as usize;
+    let best = reader.need("best", &[])?.item();
+    let rng = Rng::new(tensor_to_u64(&reader.need("rng", &[4])?));
+    reader.finish()?;
+    Ok(Progress {
+        step,
+        epoch,
+        best,
+        rng,
+    })
+}
 
 /// How long to train, in batches of what size, and where checkpoints go.
 pub struct Plan {
@@ -143,7 +154,9 @@ pub fn fit<D: Dataset + ?Sized>(
         let loss = train_epoch(model, &mut loader, |model, batch| {
             schedule.apply(opt, &base, at.step);
             at.step += 1;
-            train_step(model, batch, opt, 1.0)
+            let loss = train_step(model, batch, opt, 1.0);
+            ConstantLr.apply(opt, &base, 0); // the base rates again, for later
+            loss
         });
         let (val_loss, val_accuracy) =
             evaluate(model, &mut DataLoader::new(val, 1000));
@@ -242,7 +255,6 @@ fn run(dir: &Path, stop: usize, resume: bool) -> Result<(), Error> {
         warmup,
         dir,
     };
-    // @listing main
     let mut rng = Rng::new(20);
     let parts = random_split(&full, &[55_000, 5_000], &mut rng);
     let (training, validation) = (&parts[0], &parts[1]);
@@ -262,7 +274,6 @@ fn run(dir: &Path, stop: usize, resume: bool) -> Result<(), Error> {
     load_state_dict(&mut model, &best)?;
     let (loss, accuracy) = evaluate(&mut model, &mut DataLoader::new(&test, 1000));
     println!("best model on the test set: loss {loss:.4}, accuracy {accuracy:.4}");
-    // @end
     println!("trained in {secs:.1}s");
     Ok(())
 }

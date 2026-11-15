@@ -1,7 +1,7 @@
 //! Chapter 9: backward rules for the operations that change shapes: `expand`, the
 //! reductions `sum`, `mean` and `max`, and the views `reshape`, `transpose`,
-//! `permute`, `slice` and `select`. Their rules do no arithmetic beyond adding (and
-//! `mean`'s division): they move gradient elements, or add them up.
+//! `permute`, `slice` and `select`. Their rules move gradient elements, add them up,
+//! or (for a mean) scale them.
 
 use crate::autograd::tape::Var;
 use crate::tensor::Tensor;
@@ -53,11 +53,13 @@ impl<'t> Var<'t> {
     // @end
 
     // @listing reshape-transpose
+    /// The same elements in row-major order, as `shape` (Section 2.8).
     pub fn reshape(self, shape: &[usize]) -> Var<'t> {
         let f = |x: &Tensor| x.reshape(shape);
         self.unary("reshape", f, |x, _, g| g.reshape(x.shape()))
     }
 
+    /// Axes `a` and `b` swapped, as a view.
     pub fn transpose(self, a: usize, b: usize) -> Var<'t> {
         let f = |x: &Tensor| x.transpose(a, b);
         self.unary("transpose", f, move |_, _, g| g.transpose(a, b))
@@ -65,10 +67,10 @@ impl<'t> Var<'t> {
     // @end
 
     // @listing permute
-
     /// Axis `d` of the result is axis `order[d]` of `self`. Going back, axis `d` of
     /// `self` is the one at the position of `d` in `order`.
     pub fn permute(self, order: &[usize]) -> Var<'t> {
+        // `unwrap_or` lets a bad `order` reach `Tensor::permute`'s assert
         let at = |d| order.iter().position(|&o| o == d).unwrap_or(d);
         let back: Vec<usize> = (0..order.len()).map(at).collect(); // owned
         let f = |x: &Tensor| x.permute(order);
@@ -116,7 +118,6 @@ impl Tensor {
     // @end
 
     // @listing scatter-add
-
     /// A tensor of `shape`, all zeros except that element `k` of `src`, in
     /// row-major order, is added in at row-major position `at[k]`.
     pub fn scatter_add(shape: &[usize], at: &[usize], src: &Tensor) -> Tensor {
@@ -172,24 +173,46 @@ mod tests {
     }
     // @end
 
+    // @listing unsummed-example
     #[test]
+    #[should_panic(
+        expected = "add: the gradient for parent 1 has shape [2, 3], not [3]"
+    )]
     fn forgetting_the_sum() {
-        // @listing unsummed-example
         let tape = Tape::new();
         let x = tape.constant(Tensor::arange(&[2, 3]));
         let b = tape.leaf(Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]));
         let w = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
-        let l = (x.add_unsummed(b) * tape.constant(w.clone())).sum_all();
-        let gb = l.backward().get(b).unwrap().clone();
-        assert_eq!(gb.shape(), [2, 3]); // a gradient of 6 numbers for 3
-        assert_eq!(gb.to_vec(), w.to_vec()); // ȳ itself, never added up
-        let stepped = b.value().sub(&(&gb * 0.1)); // one step of gradient descent
-        assert_eq!(stepped.shape(), [2, 3]); // now a bias per row, and no panic
-        // @end
-        assert_eq!(stepped.to_vec(), [9.9, 19.8, 29.7, 9.6, 19.5, 29.4]);
-        let right = b
-            .value()
-            .sub(&(&Tensor::from_vec(vec![5.0, 7.0, 9.0], &[3]) * 0.1));
-        assert_eq!(right.to_vec(), [9.5, 19.3, 29.1]);
+        let l = (x.add_unsummed(b) * tape.constant(w)).sum_all();
+        l.backward(); // node 2's rule hands the [3] bias a [2, 3] gradient
+    }
+    // @end
+
+    /// The second way a wrong shape used to slip through: met by a right one.
+    #[test]
+    #[should_panic(
+        expected = "add: the gradient for parent 1 has shape [2, 3], not [3]"
+    )]
+    fn a_wrong_shape_meets_a_right_one() {
+        let tape = Tape::new();
+        let x = tape.constant(Tensor::arange(&[2, 3]));
+        let b = tape.leaf(Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]));
+        (x.add_unsummed(b).sum_all() + b.sum_all()).backward();
+    }
+
+    /// A rule that returns too few gradients is caught too.
+    #[test]
+    #[should_panic(expected = "add: the rule returned 1 gradients for 2 parents")]
+    fn a_rule_with_a_gradient_missing() {
+        let tape = Tape::new();
+        let (a, b) = (
+            tape.leaf(Tensor::zeros(&[2])),
+            tape.leaf(Tensor::zeros(&[2])),
+        );
+        let y = a.value().add(&b.value());
+        let short = |g: &Tensor| vec![g.clone()];
+        tape.push("add", y, vec![a.id, b.id], short)
+            .sum_all()
+            .backward();
     }
 }

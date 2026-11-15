@@ -25,8 +25,8 @@ impl Tensor {
     pub fn permute(&self, order: &[usize]) -> Tensor {
         // @solution ch02 permute
         let n = self.ndim();
-        let mut seen = vec![false; n];
         assert_eq!(order.len(), n, "permute: {order:?} for {n} axes");
+        let mut seen = vec![false; n];
         for &d in order {
             assert!(
                 d < n && !seen[d],
@@ -65,6 +65,7 @@ impl Tensor {
     /// Fix axis `dim` at position `i` and drop it, like `x[..., i, ...]`.
     pub fn select(&self, dim: usize, i: usize) -> Tensor {
         // @solution ch02 select
+        assert!(dim < self.ndim(), "select: axis {dim} of {}", self.ndim());
         assert!(
             i < self.shape[dim],
             "select: index {i} on an axis of size {}",
@@ -163,6 +164,7 @@ impl Tensor {
     /// Every window of `size` along `dim`, `step` apart, as a view with one more
     /// axis: axis `dim` counts windows and the new last axis runs along a window.
     pub fn unfold(&self, dim: usize, size: usize, step: usize) -> Tensor {
+        assert!(dim < self.ndim(), "unfold: axis {dim} of {}", self.ndim());
         let fits = size >= 1 && step >= 1 && size <= self.shape[dim];
         assert!(fits, "unfold: window {size}, step {step}, {:?}", self.shape);
         let mut t = self.clone();

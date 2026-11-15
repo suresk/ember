@@ -5,7 +5,8 @@ use crate::nn::{Module, Parameter};
 use crate::tensor::Tensor;
 
 // @listing zeros
-/// `zero_grad` as PyTorch did it before 2.0: every gradient a tensor of zeros.
+/// `zero_grad` with a tensor of zeros for every parameter, reached or not. (PyTorch's
+/// `set_to_none=False` zeroes, in place, only the gradients that already exist.)
 pub fn zero_grad_to_zeros(model: &mut dyn Module) {
     for p in model.parameters() {
         p.grad = Some(Tensor::zeros(p.value.shape()));
@@ -55,10 +56,13 @@ impl<M: Module> Module for Frozen<M> {
         self.0.forward(x)
     }
     fn parameters(&mut self) -> Vec<&mut Parameter> {
-        Vec::new() // backward_into finds no one to give these gradients to
+        Vec::new() // backward_into matches none of the body's links, so drops them
     }
     fn train(&mut self, on: bool) {
         self.0.train(on) // Chapter 21: frozen is not the same as evaluating
+    }
+    fn is_training(&self) -> bool {
+        self.0.is_training() // Chapter 21
     }
 }
 // @end
@@ -75,6 +79,9 @@ impl<M: Module> Module for Residual<M> {
     }
     fn train(&mut self, on: bool) {
         self.0.train(on) // Chapter 21
+    }
+    fn is_training(&self) -> bool {
+        self.0.is_training() // Chapter 21
     }
 }
 // @end

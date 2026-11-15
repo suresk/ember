@@ -6,6 +6,7 @@ use crate::tensor::Tensor;
 
 // @listing check-targets
 /// Panics unless `logits` is `[N, C]` and `targets` holds `N` classes below `C`.
+/// An empty batch passes, and its mean loss is 0/0, NaN, as in PyTorch.
 fn check_targets(logits: &Tensor, targets: &[usize]) {
     let shape = logits.shape();
     assert!(shape.len() == 2, "cross_entropy: logits {shape:?}");
@@ -18,9 +19,11 @@ fn check_targets(logits: &Tensor, targets: &[usize]) {
 }
 
 /// A `[N, classes]` tensor with a 1 at `[i, targets[i]]` and 0 everywhere else.
+/// Panics on a class of `classes` or more, which would land in the next row.
 pub fn one_hot(targets: &[usize], classes: usize) -> Tensor {
     let mut data = vec![0.0; targets.len() * classes];
     for (row, &c) in targets.iter().enumerate() {
+        assert!(c < classes, "one_hot: target {c}, {classes} classes");
         data[row * classes + c] = 1.0;
     }
     Tensor::from_vec(data, &[targets.len(), classes])
@@ -34,7 +37,7 @@ pub fn cross_entropy<'t>(logits: Var<'t>, targets: &[usize]) -> Var<'t> {
     let z = logits.value();
     check_targets(&z, targets);
     let n = targets.len();
-    let log_p = z.log_softmax(1); // [N, C], every entry finite and at most 0
+    let log_p = z.log_softmax(1); // [N, C], at most 0 for finite logits
     let picked = targets.iter().enumerate();
     let sum: f64 = picked.map(|(i, &c)| log_p.get(&[i, c]) as f64).sum();
     let loss = Tensor::from_vec(vec![(-sum / n as f64) as f32], &[]);

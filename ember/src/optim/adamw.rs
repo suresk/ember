@@ -11,6 +11,7 @@ use crate::train::{CheckpointError, StateDict};
 pub struct AdamW(Adam);
 
 impl AdamW {
+    /// `Adam::new(lr)` with decoupled weight decay 0.01, PyTorch's default.
     pub fn new(lr: f32) -> AdamW {
         let adam = Adam::new(lr).weight_decay(0.01);
         AdamW(adam.decoupled_weight_decay(true))
@@ -32,18 +33,23 @@ impl Optimizer for AdamW {
 
 /// Adam's builder methods, for AdamW.
 impl AdamW {
+    /// β₁ and β₂, as for `Adam`.
     pub fn betas(self, betas: (f32, f32)) -> AdamW {
         AdamW(self.0.betas(betas))
     }
+    /// The number added to √v_hat.
     pub fn eps(self, eps: f32) -> AdamW {
         AdamW(self.0.eps(eps))
     }
+    /// Set group 0's (decoupled) weight decay λ.
     pub fn weight_decay(self, weight_decay: f32) -> AdamW {
         AdamW(self.0.weight_decay(weight_decay))
     }
+    /// Add a group, with its own learning rate and weight decay.
     pub fn group(self, group: ParamGroup) -> AdamW {
         AdamW(self.0.group(group))
     }
+    /// The state of one parameter, if it has ever been updated.
     pub fn state(&self, id: ParamId) -> Option<&AdamState> {
         self.0.state(id)
     }

@@ -5,6 +5,7 @@ fn floats(xs: &[i32]) -> Vec<f32> {
     xs.iter().map(|&x| x as f32).collect()
 }
 
+// @challenge 1
 #[test]
 fn predict_reductions() {
     let x = Tensor::arange(&[2, 3, 4]);
@@ -26,6 +27,7 @@ fn predict_reductions() {
     assert_eq!((&x - &m).get(&[1, 2, 3]), 1.5);
 }
 
+// @challenge 2
 #[test]
 fn min_and_argmin() {
     let x = Tensor::from_vec(vec![3.0, 1.0, 1.0, 0.0, 5.0, 0.0], &[2, 3]);
@@ -36,6 +38,7 @@ fn min_and_argmin() {
     assert_eq!(x.argmin(0), vec![1, 0, 1]);
 }
 
+// @challenge 4
 #[test]
 fn var_with_bessels_correction() {
     let x = Tensor::from_vec(vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0], &[8]);
@@ -55,6 +58,7 @@ fn var_with_bessels_correction() {
     assert_eq!(y.var(0, false, 1).item(), 1.0);
 }
 
+// @challenge 5
 #[test]
 fn where_selects_and_masks() {
     let x = Tensor::from_vec(vec![-2.0, 3.0, -1.0, 4.0], &[4]);
@@ -87,6 +91,7 @@ fn where_rejects_incompatible_shapes() {
     Tensor::where_(&Tensor::arange(&[2]), &Tensor::arange(&[3]), &s);
 }
 
+// @challenge 3
 #[test]
 fn cumsum_runs_along_an_axis() {
     let x = Tensor::arange(&[2, 3]);
@@ -104,6 +109,7 @@ fn cumsum_runs_along_an_axis() {
     assert_eq!(c.get(&[1, 1, 2]), 14.0 + 18.0);
 }
 
+// @challenge 6
 #[test]
 fn softplus_without_overflow() {
     let naive = |x: f32| (1.0 + x.exp()).ln();
@@ -118,6 +124,7 @@ fn softplus_without_overflow() {
     assert!((one - naive(1.0)).abs() < 1e-6); // both about 1.3132616
 }
 
+// @challenge 7
 #[test]
 fn sum_strided_matches_sum() {
     let x = Tensor::arange(&[2, 3, 4]);

@@ -65,7 +65,8 @@ impl Tensor {
         self.shape == other.shape
             && (0..self.numel()).all(|i| {
                 let index = unravel_index(i, &self.shape);
-                (self.get(&index) - other.get(&index)).abs() <= tol
+                let (a, b) = (self.get(&index), other.get(&index));
+                a == b || (a - b).abs() <= tol // a == b: inf matches inf
             })
     }
     // @end
@@ -79,7 +80,7 @@ impl Tensor {
         d: usize,
     ) -> fmt::Result {
         if d == self.ndim() {
-            return write!(f, "{}", self.get(index));
+            return fmt::Display::fmt(&self.get(index), f); // keeps {:.2} and {:8}
         }
         write!(f, "[")?;
         for i in 0..self.shape[d] {

@@ -1,5 +1,5 @@
 //! Tests for the Chapter 5 challenges: `cargo test --test challenges_ch05`.
-use ember::{Tensor, matmul_blocked_with, matmul_naive, matmul_nt_kernel};
+use ember::{Tensor, matmul_naive};
 
 fn floats(xs: &[i32]) -> Vec<f32> {
     xs.iter().map(|&x| x as f32).collect()
@@ -11,6 +11,7 @@ fn fractions(len: usize, seed: usize) -> Vec<f32> {
         .collect()
 }
 
+// @challenge 1
 #[test]
 fn predict_matmul() {
     let x = Tensor::arange(&[3, 3]);
@@ -29,6 +30,7 @@ fn predict_matmul() {
     assert!((ms - 35.8).abs() < 0.05, "{ms}");
 }
 
+// @challenge 2
 #[test]
 fn dot_and_trace() {
     let u = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
@@ -46,11 +48,12 @@ fn dot_and_trace() {
 }
 
 #[test]
-#[should_panic(expected = "dot: shapes [3] and [2] are not one vector length")]
+#[should_panic(expected = "dot: [3] and [2] are not vectors of the same length")]
 fn dot_wants_equal_lengths() {
     Tensor::arange(&[3]).dot(&Tensor::arange(&[2]));
 }
 
+// @challenge 3
 #[test]
 fn matvec_is_a_product_with_a_column() {
     let a = Tensor::arange(&[2, 3]);
@@ -68,6 +71,9 @@ fn matvec_is_a_product_with_a_column() {
     let empty = Tensor::zeros(&[2, 0]).matvec(&Tensor::zeros(&[0]));
     assert_eq!(empty.to_vec(), vec![0.0, 0.0]);
 }
+
+// @challenge 4
+use ember::matmul_nt_kernel;
 
 #[test]
 fn matmul_nt_needs_no_transpose() {
@@ -89,6 +95,7 @@ fn matmul_nt_needs_no_transpose() {
     assert_eq!(c, want.to_vec());
 }
 
+// @challenge 5
 #[test]
 fn matmul_broadcasts_batch_axes() {
     // Shared weights: [4, 2, 3] @ [3, 2], the shape of a batch through a layer.
@@ -121,6 +128,9 @@ fn matmul_broadcast_rejects_batches() {
     Tensor::arange(&[2, 2, 3]).matmul_broadcast(&Tensor::arange(&[3, 3, 2]));
 }
 
+// @challenge 6
+use ember::matmul_blocked_with;
+
 #[test]
 fn blocked_with_any_panel() {
     let (m, k, n) = (9, 70, 17);
@@ -134,6 +144,14 @@ fn blocked_with_any_panel() {
     }
 }
 
+#[test]
+#[should_panic(expected = "matmul_blocked_with: a panel of 0 rows")]
+fn blocked_with_rejects_panel_0() {
+    let mut c = vec![0.0; 4];
+    matmul_blocked_with(&[0.0; 4], &[0.0; 4], &mut c, (2, 2, 2), 0);
+}
+
+// @challenge 7
 #[test]
 fn matmul_through_strides() {
     let x = Tensor::arange(&[4, 5]);

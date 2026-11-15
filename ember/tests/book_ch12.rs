@@ -6,6 +6,8 @@ use ember::{
     Var, gradcheck,
 };
 
+// @listing helpers
+/// A tensor from a slice and a shape.
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), shape)
 }
@@ -21,6 +23,7 @@ fn rms(x: &Tensor) -> f32 {
     let sum: f64 = v.iter().map(|&a| (a as f64) * (a as f64)).sum();
     (sum / v.len() as f64).sqrt() as f32
 }
+// @end
 
 #[test]
 fn a_seeded_stream() {
@@ -82,12 +85,12 @@ fn one_layer() {
     // @end
 }
 
+// @listing depth
 /// An activation, as a function of a `Var` on any tape.
 type Act = fn(Var<'_>) -> Var<'_>;
 const TANH: Act = |y| y.tanh();
 const RELU: Act = |y| y.relu();
 
-// @listing depth
 /// The RMS after each layer `act(x·W)`, and of the input's gradient for `Σy`.
 fn through_layers(std: f32, act: Act, depth: usize) -> (Vec<f32>, f32) {
     let mut rng = Rng::new(42);
@@ -104,14 +107,15 @@ fn through_layers(std: f32, act: Act, depth: usize) -> (Vec<f32>, f32) {
 }
 // @end
 
-/// One row of the section's table: the RMS after layers 1, 2, 5 and 10 of ten, and
-/// the gradient's.
+// @listing row
+/// A row of the tables: the RMS after layers 1, 2, 5 and 10 of ten, and the
+/// gradient's.
 fn row(std: f32, act: Act) -> [f32; 5] {
     let (sizes, grad) = through_layers(std, act, 10);
     [sizes[0], sizes[1], sizes[4], sizes[9], grad]
 }
 
-/// `got` is `want` to the three digits printed.
+/// Every number of `got` within 0.5% of the printed `want`.
 fn digits(got: [f32; 5], want: [f32; 5]) -> bool {
     let ok = got.iter().zip(want).all(|(&g, w)| near(g, w, 5e-3));
     if !ok {
@@ -119,6 +123,7 @@ fn digits(got: [f32; 5], want: [f32; 5]) -> bool {
     }
     ok
 }
+// @end
 
 #[test]
 fn ten_layers_too_small_and_too_large() {
@@ -135,12 +140,13 @@ fn ten_layers_initialized_to_scale() {
     let xavier = row(init::xavier_std(100, 100), TANH); // 0.1
     assert!(digits(xavier, [0.624, 0.486, 0.3182, 0.230, 0.216]));
     let xavier = row(init::xavier_std(100, 100), RELU);
-    assert!(digits(xavier, [0.685, 0.424, 0.127, 0.0255, 0.0648]));
+    assert!(digits(xavier, [0.685, 0.423, 0.127, 0.0255, 0.0648]));
     let he = row(init::he_std(100), RELU); // 0.141
     assert!(digits(he, [0.969, 0.847, 0.720, 0.817, 2.07]));
     let (every, _) = through_layers(init::he_std(100), RELU, 10);
     assert!(every.iter().all(|&s| (0.72..0.97).contains(&s))); // layers 1 to 10
-    // PyTorch's default, uniform in ±1/√100: standard deviation 1/√300.
+    // PyTorch's default variance, that of uniform in ±1/√100, as normal weights of
+    // standard deviation 1/√300, with no bias.
     let torch = row(1.0 / 300f32.sqrt(), TANH);
     assert!(digits(torch, [0.456, 0.250, 0.0455, 0.00291, 0.00229]));
     let torch = row(1.0 / 300f32.sqrt(), RELU);
@@ -148,6 +154,49 @@ fn ten_layers_initialized_to_scale() {
     // Xavier with PyTorch's gain for tanh, 5/3.
     let gain = row(init::xavier_std(100, 100) * 5.0 / 3.0, TANH);
     assert!(digits(gain, [0.756, 0.691, 0.654, 0.657, 1.88]));
+}
+
+/// The RMS of each layer's weight gradient for `Σy`, in `through_layers`'s network
+/// with every `W` a leaf.
+fn weight_grads(std: f32, act: Act) -> Vec<f32> {
+    let mut rng = Rng::new(42);
+    let tape = Tape::new();
+    let mut x = tape.constant(Tensor::randn(&[50, 100], &mut rng));
+    let mut ws = Vec::new();
+    for _ in 0..10 {
+        let w = tape.leaf(init::normal(&[100, 100], std, &mut rng));
+        x = act(x.matmul(w));
+        ws.push(w);
+    }
+    let grads = x.sum_all().backward();
+    ws.iter().map(|&w| rms(grads.get(w).unwrap())).collect()
+}
+
+#[test]
+fn weight_gradients_by_layer() {
+    // Too small: every layer's weight gradient is about 10⁻⁹, the first no worse
+    // off than the last.
+    let small = weight_grads(0.01, TANH);
+    assert!(small.iter().all(|&g| (5e-9..7e-9).contains(&g)));
+    assert!(near(small[0], 5.1e-9, 2e-2) && near(small[9], 5.2e-9, 2e-2));
+    // Too large: the first layer's is thousands of times the last's.
+    let large = weight_grads(1.0, TANH);
+    assert!(near(large[0], 3206.0, 1e-3) && near(large[9], 1.5, 2e-2));
+}
+
+#[test]
+fn ten_linear_layers_with_their_biases() {
+    // @listing biases
+    let mut rng = Rng::new(42);
+    let mut h = Tensor::randn(&[50, 100], &mut rng);
+    for _ in 0..10 {
+        let layer = Linear::new(100, 100, &mut rng); // weight, then bias
+        h = h.matmul(&layer.weight.value).add(&layer.bias.value).relu();
+    }
+    let centered = h.sub(&h.mean(0, true)); // the part that differs by row
+    assert!(near(rms(&h), 0.0412, 1e-2)); // the biases' level, not 10⁻⁴
+    assert!(near(rms(&centered), 7.66e-5, 1e-2)); // the input's part
+    // @end
 }
 
 #[test]
@@ -240,7 +289,7 @@ fn pytorch_default_init() {
     let mut rng = Rng::new(42);
     let layer = Linear::new(784, 128, &mut rng);
     assert_eq!(layer.weight.value.shape(), [784, 128]); // [in, out]
-    let largest = |t: &Tensor| t.to_vec().iter().fold(0f32, |m, w| m.max(w.abs()));
+    let largest = |t: &Tensor| t.to_vec().iter().map(|w| w.abs()).fold(0.0, f32::max);
     assert!(largest(&layer.weight.value) <= 1.0 / 28.0); // 1/√784 = 0.0357
     assert!(largest(&layer.bias.value) <= 1.0 / 28.0); // the bias too
     assert!(near(rms(&layer.weight.value), 0.020_56, 1e-3)); // 1/√(3 · 784) = 0.0206
@@ -318,10 +367,10 @@ fn a_sequential_mlp() {
     let count: usize = model.parameters().iter().map(|p| p.value.numel()).sum();
     assert_eq!((count, model.parameters().len()), (101_770, 4)); // Section 11.7's
     let tape = Tape::new();
-    let images = tape.constant(Tensor::rand(&[64, 784], &mut rng)); // a fake batch
+    let images = tape.constant(Tensor::rand(&[64, 784], &mut rng)); // uniform noise
     let logits = model.forward(images);
     assert_eq!(logits.shape(), [64, 10]); // ten scores for each of 64 images
-    assert_eq!(tape.len(), 14); // the batch, 6 nodes per Linear, 1 relu
+    assert_eq!(tape.len(), 14); // see below
     // @end
 }
 
@@ -345,6 +394,10 @@ fn the_numbers_in_the_prose() {
     assert!(near(radius(2f64.powi(-24)) as f32, 5.77, 1e-3));
     assert!(near((1.0 / two_tails(5.768)) as f32, 1.25e8, 0.02));
     assert!(near(two_tails(8.5717) as f32, 1.03e-17, 0.02));
+    // Section 12.2: standard errors of the mean, 1/√n, and of the RMS, about 1/√(2n).
+    let (se_mean, se_rms) = (1.0 / 100f32, 1.0 / 20_000f32.sqrt());
+    assert!(near(0.006_909 / se_mean, 0.69, 1e-2));
+    assert!(near((1.0 - 0.983_84) / se_rms, 2.29, 1e-2));
     // Section 12.3: tanh is within 0.01 of ±1 past 2.65, a normal passes 0.265σ 79%.
     assert!(near(0.99f32.atanh(), 2.647, 1e-3));
     assert!(near(two_tails(0.265) as f32, 0.791, 1e-3));

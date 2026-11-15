@@ -7,18 +7,27 @@ use crate::tensor::Tensor;
 
 // @listing curve
 /// A text chart of `values`, `width` columns by `height` rows, on a log scale:
-/// column j shows the mean of its share of the values.
+/// column j shows the mean of its share of the values. A column whose mean is 0,
+/// infinite or NaN has no finite log and is left blank.
+///
+/// # Panics
+/// If `width` is 0 or more than `values.len()`, or `height` is less than 2.
 pub fn curve(values: &[f32], width: usize, height: usize) -> String {
     let n = values.len();
+    assert!(
+        0 < width && width <= n && height >= 2,
+        "curve: {n} values, {width}×{height}"
+    );
     let column = |j: usize| {
         let share = &values[j * n / width..(j + 1) * n / width];
         math::ln(share.iter().sum::<f32>() / share.len() as f32)
     };
     let logs: Vec<f32> = (0..width).map(column).collect();
-    let span = |(t, b): (f32, f32), &y: &f32| (t.max(y), b.min(y));
-    let (top, bottom) = logs.iter().fold((f32::MIN, f32::MAX), span);
+    let finite = || logs.iter().enumerate().filter(|(_, y)| y.is_finite());
+    let span = |(t, b): (f32, f32), (_, &y): (usize, &f32)| (t.max(y), b.min(y));
+    let (top, bottom) = finite().fold((f32::NEG_INFINITY, f32::INFINITY), span);
     let mut lines = vec![vec![' '; width]; height];
-    for (j, &y) in logs.iter().enumerate() {
+    for (j, &y) in finite() {
         let row = (top - y) / (top - bottom).max(1e-6) * (height - 1) as f32;
         lines[row.round() as usize][j] = '*';
     }
@@ -38,8 +47,8 @@ pub fn curve(values: &[f32], width: usize, height: usize) -> String {
 }
 // @end
 
-/// `curve` on a linear scale: column j shows the mean of its share of the values,
-/// between their smallest and largest column means.
+/// `curve` on a linear scale, for values that reach 0: the same chart with
+/// `math::ln` and `math::exp` left out.
 pub fn curve_linear(values: &[f32], width: usize, height: usize) -> String {
     let n = values.len();
     let column = |j: usize| {
@@ -47,11 +56,11 @@ pub fn curve_linear(values: &[f32], width: usize, height: usize) -> String {
         share.iter().sum::<f32>() / share.len() as f32
     };
     let ys: Vec<f32> = (0..width).map(column).collect();
-    let top = ys.iter().cloned().fold(f32::MIN, f32::max);
-    let bottom = ys.iter().cloned().fold(f32::MAX, f32::min);
+    let span = |(t, b): (f32, f32), &y: &f32| (t.max(y), b.min(y));
+    let (top, bottom) = ys.iter().fold((f32::MIN, f32::MAX), span);
     let mut lines = vec![vec![' '; width]; height];
     for (j, &y) in ys.iter().enumerate() {
-        let row = (top - y) / (top - bottom).max(1e-12) * (height - 1) as f32;
+        let row = (top - y) / (top - bottom).max(1e-6) * (height - 1) as f32;
         lines[row.round() as usize][j] = '*';
     }
     let mut out = String::new();
@@ -71,6 +80,7 @@ pub fn curve_linear(values: &[f32], width: usize, height: usize) -> String {
 /// A map of the square [-extent, extent]², `cols` characters by `rows`: each
 /// character shows the class `classify` gives the center of its cell, `.` for 0,
 /// a space for 1, then `-`, `:`; the `points` are drawn on top as `o`, `x`, `+`, `#`.
+/// Panics on a class or label above 3.
 pub fn regions(
     classify: impl Fn(&Tensor) -> Vec<usize>,
     extent: f32,
@@ -89,8 +99,8 @@ pub fn regions(
         .chunks(cols)
         .map(|line| line.iter().map(|&c| ['.', ' ', '-', ':'][c]).collect())
         .collect();
+    let cell = |v: f32, n: usize| ((v / extent + 1.0) / 2.0 * n as f32).floor();
     for (i, &label) in labels.iter().enumerate() {
-        let cell = |v: f32, n: usize| ((v / extent + 1.0) / 2.0 * n as f32).floor();
         let (c, r) = (
             cell(points.get(&[i, 0]), cols),
             cell(-points.get(&[i, 1]), rows),

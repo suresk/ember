@@ -65,8 +65,10 @@ fn noisy(opt: &mut dyn Optimizer, s: &dyn LrScheduler, rng: &mut Rng) -> Vec<f32
 }
 // @end
 
-/// Adam at `lr` under `schedule` on the noisy bowl, 20 runs of 1000 steps: the
-/// root mean square of w over steps 51–100, 451–500 and 951–1000.
+// @listing floor-fn
+/// Adam at `lr` under `schedule` on the noisy bowl, 20 runs of 1000 steps that
+/// share one generator: the root mean square of w over steps 51–100, 451–500
+/// and 951–1000, each pooled over the 20 runs.
 fn floor(lr: f32, schedule: &dyn LrScheduler) -> [f32; 3] {
     let windows = [(50, 100), (450, 500), (950, 1000)];
     let (mut rng, mut sums) = (Rng::new(18), [0.0f64; 3]);
@@ -78,6 +80,7 @@ fn floor(lr: f32, schedule: &dyn LrScheduler) -> [f32; 3] {
     }
     sums.map(|sum| (sum / (20 * 50) as f64).sqrt() as f32)
 }
+// @end
 
 #[test]
 fn the_noise_floor() {
@@ -96,10 +99,10 @@ fn the_noise_floor() {
         [0.2138, 0.0752, 0.0522],
         [0.2124, 0.1524, 0.0642],
     ];
-    // @end
     for (row, want) in rows.iter().zip(&want) {
         assert!(close(row, want, 1e-4), "{row:?}");
     }
+    // @end
 }
 
 #[test]
@@ -131,12 +134,12 @@ fn three_schedules() {
 fn every_group_from_its_base() {
     // @listing groups
     let head = Parameter::new(tensor(&[0.0]));
-    let (ids, lr, weight_decay) = (vec![head.id()], 0.01, 0.0); // a slower group
-    let mut opt = Sgd::new(0.1).group(ParamGroup {
-        ids,
-        lr,
-        weight_decay,
-    });
+    let slow = ParamGroup {
+        ids: vec![head.id()],
+        lr: 0.01,
+        weight_decay: 0.0,
+    };
+    let mut opt = Sgd::new(0.1).group(slow);
     let base = base_lrs(&opt);
     CosineLr::new(10, 0.0).apply(&mut opt, &base, 5); // halfway
     let lrs: Vec<f32> = opt.groups().iter().map(|g| g.lr).collect();
@@ -151,6 +154,8 @@ fn cosine_in_f32() {
     let half = 0.1 * (1.0 + (PI * 5.0 / 10.0).cos()) / 2.0; // all f32
     assert_eq!((PI / 2.0).cos(), -4.371139e-8); // not 0: PI is not π
     assert_eq!(half, 0.049999997);
+    let wide = ember::math::cos64(std::f64::consts::PI / 2.0); // f64 PI is off too
+    assert!((wide - 6.1e-17).abs() < 1e-18);
     // @end
 }
 
@@ -248,13 +253,19 @@ fn cosine_on_the_spirals() {
 
 // @listing chain
 /// 20 weights in a chain, y = w₁·w₂·…·w₂₀·x, all starting at 1.2, trained
-/// toward y = 1 at x = 1 with `opt`, clipping at `max_norm`. Returns the loss
-/// and the gradient's norm (before clipping) at every step.
-fn chain(opt: &mut dyn Optimizer, max_norm: f32, steps: usize) -> Vec<(f32, f32)> {
+/// toward y = 1 at x = 1 with `opt` under `schedule`, clipping at `max_norm`.
+/// Returns the loss and the gradient's norm (before clipping) at every step.
+fn chain(
+    opt: &mut dyn Optimizer,
+    schedule: &dyn LrScheduler,
+    (steps, max_norm): (usize, f32),
+) -> Vec<(f32, f32)> {
+    let base = base_lrs(opt);
     let mut ws: Vec<Parameter> =
         (0..20).map(|_| Parameter::new(tensor(&[1.2]))).collect();
     let mut out = vec![];
-    for _ in 0..steps {
+    for t in 0..steps {
+        schedule.apply(opt, &base, t);
         let mut params: Vec<&mut Parameter> = ws.iter_mut().collect();
         params.iter_mut().for_each(|p| p.grad = None);
         let loss = {
@@ -276,21 +287,76 @@ fn chain(opt: &mut dyn Optimizer, max_norm: f32, steps: usize) -> Vec<(f32, f32)
 #[test]
 fn a_cliff() {
     // @listing cliff
-    let sgd = |lr, max_norm, steps| chain(&mut Sgd::new(lr), max_norm, steps);
-    let big = sgd(0.01, NO_CLIP, 4); // NO_CLIP = ∞: the norm is only measured
+    let sgd = |lr, run| chain(&mut Sgd::new(lr), &ConstantLr, run);
+    let big = sgd(0.01, (4, NO_CLIP)); // NO_CLIP = ∞: the norm is only measured
     assert!(close(&[big[0].0, big[0].1], &[1394.1, 10669.3], 0.05));
     assert!(big[1].0.is_infinite() && big[3].0.is_nan());
-    let small = sgd(0.001, NO_CLIP, 300);
+    let small = sgd(0.001, (300, NO_CLIP));
     assert!(close(&[small[2].0, small[299].0], &[1.0, 1.0], 1e-6)); // stuck
     assert!(small[299].1 < 1e-8); // on a plateau
-    let tiny = sgd(0.0001, NO_CLIP, 300);
+    let tiny = sgd(0.0001, (300, NO_CLIP));
     assert!(close(&[tiny[1].0, tiny[299].0], &[0.2967, 0.1425], 1e-4));
-    let losses = |run: Vec<(f32, f32)>| run.iter().map(|r| r.0).collect::<Vec<_>>();
-    let done = |max_norm| below(&losses(sgd(0.01, max_norm, 100)), 1e-6);
-    assert_eq!((done(1.0), done(10.0)), (Some(97), Some(19)));
     // @end
-    let adam = chain(&mut Adam::new(0.01), NO_CLIP, 300);
-    assert!((adam[299].0 - 0.1674).abs() < 1e-3);
+}
+
+/// The first step (from 1) of `run` whose loss is below 10⁻⁶.
+fn trained(run: Vec<(f32, f32)>) -> Option<usize> {
+    below(&run.iter().map(|r| r.0).collect::<Vec<_>>(), 1e-6)
+}
+
+#[test]
+fn off_the_cliff() {
+    // @listing cliff-fixes
+    let run = |s: &dyn LrScheduler, max_norm| {
+        chain(&mut Sgd::new(0.01), s, (300, max_norm))
+    };
+    let warm = |w| run(&LinearWarmup::new(w, ConstantLr), NO_CLIP);
+    let (w10, w50, w100) = (warm(10), warm(50), warm(100));
+    assert!(w10[2].0 > 1e10 && w10[5].0.is_nan()); // too short: off the cliff
+    assert!((w50[299].0 - 0.9956).abs() < 1e-4); // on the plateau
+    assert_eq!(trained(w100), Some(63)); // long enough
+    let clip = |max_norm| trained(run(&ConstantLr, max_norm));
+    assert_eq!((clip(1.0), clip(10.0)), (Some(97), Some(19)));
+    // @end
+}
+
+#[test]
+fn what_overflows() {
+    // After SGD's first step at 0.01 every weight is 1.2 − 0.01 · 2385.7.
+    let w = 1.2 - 0.01 * 2385.7f32;
+    let y = (0..20).fold(1.0f32, |p, _| p * w);
+    assert!((w + 22.657).abs() < 1e-3 && (y / 1.27e27 - 1.0).abs() < 0.01);
+    assert!(y.is_finite() && ((y - 1.0) * (y - 1.0)).is_infinite());
+}
+
+#[test]
+#[should_panic(expected = "a period of 0 steps")]
+fn step_lr_needs_a_period() {
+    StepLr::new(0, 0.5);
+}
+
+#[test]
+#[should_panic(expected = "a cosine over 0 steps")]
+fn cosine_needs_steps() {
+    CosineLr::new(0, 0.0); // e.g. a warmup as long as the run
+}
+
+#[test]
+fn clipping_a_non_finite_gradient() {
+    // An overflowed gradient: the norm is ∞, and the caller must skip the step.
+    let mut a = Parameter::new(tensor(&[0.0, 0.0]));
+    a.grad = Some(tensor(&[f32::INFINITY, 1.0]));
+    assert!(clip_grad_norm(&mut [&mut a], 1.0).is_infinite());
+}
+
+#[test]
+fn adam_on_the_chain() {
+    // @listing adam-chain
+    let adam = |max_norm| chain(&mut Adam::new(0.01), &ConstantLr, (300, max_norm));
+    let (free, clipped) = (adam(NO_CLIP), adam(1.0));
+    assert!((free[299].0 - 0.1674).abs() < 1e-3); // unclipped: still far off
+    assert_eq!(trained(clipped), Some(21));
+    // @end
 }
 
 #[test]

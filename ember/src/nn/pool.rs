@@ -8,9 +8,10 @@ use crate::nn::{Module, Parameter};
 // @listing max-pool
 /// The largest value in each `size` × `size` window of each channel, the
 /// windows `size` apart: max pooling, which halves the height and width for 2.
+/// The window is private, so its padding stays 0 (`MaxPool2d::new`).
 #[derive(Clone, Copy, Debug)]
 pub struct MaxPool2d {
-    pub window: Window,
+    window: Window,
 }
 
 impl Module for MaxPool2d {
@@ -28,6 +29,7 @@ impl Module for MaxPool2d {
 // @end
 
 impl MaxPool2d {
+    /// `size` × `size` windows, `size` apart, without padding.
     pub fn new(size: usize) -> MaxPool2d {
         let window = Window::new(size, size, 0); // zeros could beat negative inputs
         MaxPool2d { window }
@@ -45,8 +47,8 @@ pub struct Unflatten(pub Vec<usize>);
 
 impl Module for Flatten {
     fn forward<'t>(&self, x: Var<'t>) -> Var<'t> {
-        let n = x.shape()[0];
-        x.reshape(&[n, x.value().numel() / n])
+        let shape = x.shape();
+        x.reshape(&[shape[0], shape[1..].iter().product()]) // no division: N may be 0
     }
     fn parameters(&mut self) -> Vec<&mut Parameter> {
         Vec::new()

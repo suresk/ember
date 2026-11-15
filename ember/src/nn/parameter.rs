@@ -14,7 +14,7 @@ pub struct ParamId(usize);
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 impl ParamId {
-    fn next() -> ParamId {
+    fn fresh() -> ParamId {
         ParamId(NEXT_ID.fetch_add(1, Ordering::Relaxed)) // read and add, as one step
     }
 }
@@ -32,8 +32,11 @@ pub struct Parameter {
 
 impl Parameter {
     pub fn new(value: Tensor) -> Parameter {
-        let (id, grad) = (ParamId::next(), None);
-        Parameter { id, value, grad }
+        Parameter {
+            id: ParamId::fresh(),
+            value,
+            grad: None,
+        }
     }
 
     pub fn id(&self) -> ParamId {
@@ -46,6 +49,7 @@ impl Parameter {
 impl Parameter {
     /// Add `g` into `grad`, keeping `grad` a contiguous tensor.
     pub(crate) fn add_grad(&mut self, g: Tensor) {
+        assert_eq!(g.shape(), self.value.shape(), "add_grad: {:?}", self.id);
         let sum = match self.grad.take() {
             Some(sum) => sum.add(&g), // a new tensor
             None => g.contiguous(),   // kept as it is, or copied if strided

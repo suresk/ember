@@ -2,6 +2,7 @@
 //! gradient checking.
 use ember::{Gradients, Tape, Tensor, Tolerance, Var, gradcheck};
 
+// @listing helpers
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), shape)
 }
@@ -10,15 +11,16 @@ fn grad(grads: &Gradients, v: Var) -> Vec<f32> {
     grads.get(v).expect("a gradient").to_vec()
 }
 
-/// `x` is within a fraction `rel` of `want`.
+/// `|x - want|` is at most `rel · |want|`.
 fn near(x: f64, want: f64, rel: f64) -> bool {
     (x - want).abs() <= rel * want.abs()
 }
 
-/// The section's weights on the four entries of C.
+/// The weights W on the four entries of C (Section 10.1).
 fn w22() -> Tensor {
     t(&[1.0, 2.0, 3.0, 4.0], &[2, 2])
 }
+// @end
 
 #[test]
 fn the_gradient_by_hand() {
@@ -104,7 +106,7 @@ fn the_size_of_a_nudge() {
     };
     let hs = [1e-1, 1e-2, 5e-3, 1e-3, 1e-4, 1e-5, 1e-6];
     let errors: Vec<f64> = hs.iter().map(|&h| error(h)).collect();
-    let best = (0..7).min_by(|&i, &j| errors[i].total_cmp(&errors[j]));
+    let best = (0..hs.len()).min_by(|&i, &j| errors[i].total_cmp(&errors[j]));
     assert_eq!(best.map(|i| hs[i]), Some(5e-3)); // near ε^(1/3)
     // @end
     let want = [
@@ -132,6 +134,29 @@ fn the_size_of_a_nudge() {
         let h = h as f64;
         assert!(*got <= e * h * h / 6.0 + eps * e / h); // within the two terms
     }
+    // Twenty times too large costs 190x, fifty times too small 37x.
+    assert!(near(errors[0] / errors[2], 190.0, 0.01));
+    assert!(near(errors[4] / errors[2], 37.0, 0.01));
+    // gradcheck's formula divides by the rounded step. At x = 1 that happens to
+    // favor 1e-3; averaged over x = 0.5 + k/64, k < 64, 5e-3 is still best.
+    let rounded = |x: f32, h: f32| {
+        let (up, down) = (x + h, x - h);
+        let slope = (exp(up) - exp(down)) / (up as f64 - down as f64);
+        (slope - (x as f64).exp()).abs() / (x as f64).exp()
+    };
+    assert!(near(rounded(1.0, 1e-3) * e, 1.59e-6, 0.01));
+    let mean = |h: f32| {
+        (0..64)
+            .map(|k| rounded(0.5 + k as f32 / 64.0, h))
+            .sum::<f64>()
+            / 64.0
+    };
+    let means: Vec<f64> = hs.iter().map(|&h| mean(h)).collect();
+    let best = (0..hs.len()).min_by(|&i, &j| means[i].total_cmp(&means[j]));
+    assert_eq!(best.map(|i| hs[i]), Some(5e-3));
+    assert!(near(means[2], 3.9e-6, 0.01), "{means:?}"); // 5e-3
+    assert!(near(means[3], 1.2e-5, 0.05), "{means:?}"); // 1e-3
+    assert!(near(means[1], 1.7e-5, 0.01), "{means:?}"); // 1e-2
 }
 
 #[test]
@@ -158,8 +183,9 @@ fn an_absolute_tolerance_fails_large_gradients() {
 }
 
 // @listing golden
-/// `n` numbers spread evenly over `[lo, hi)`, no two close: `lo + (hi - lo)` times
-/// the fractional part of `0.618034 k` (the golden ratio), for `k = 1, 2, …`.
+/// `n` numbers spread over `[lo, hi)`, no two close: `lo + (hi - lo)` times the
+/// fractional part of `k / φ = 0.618034 k`, for `k = 1, 2, …` (a Weyl sequence).
+/// In `f32` the fraction keeps fewer digits as `k` grows; fine for a few hundred.
 fn golden(shape: &[usize], lo: f32, hi: f32) -> Tensor {
     let n: usize = shape.iter().product();
     let frac = |k: usize| (k as f32 * 0.618_034).fract();
@@ -167,6 +193,7 @@ fn golden(shape: &[usize], lo: f32, hi: f32) -> Tensor {
 }
 // @end
 
+// @listing rules
 type Check = for<'t> fn(&[Var<'t>]) -> Var<'t>;
 
 /// Every rule of Chapters 7 to 10; `v[0]` has either sign, `v[1]` is positive.
@@ -201,6 +228,7 @@ const RULES: [(&str, Check); 27] = [
     }),
     ("batched matmul", |v| v[0].matmul(v[1].transpose(1, 2))),
 ];
+// @end
 
 #[test]
 fn every_rule_against_gradcheck() {
@@ -212,8 +240,10 @@ fn every_rule_against_gradcheck() {
         let w = gradcheck(f, &[x.clone(), p.clone()], Tolerance::default())
             .unwrap_or_else(|w| panic!("{name}: {w:?}"));
         let rel = (w.analytic - w.numeric).abs() / w.numeric.abs().max(1e-30);
+        println!("{name:>14}  {rel:.1e}  {:.4}", w.ratio);
         table.push((name, rel, w.ratio));
     }
+    assert!(table.iter().all(|&(_, _, ratio)| ratio < 0.01));
     // @end
     let want = [
         ("add", 2.4e-5),
@@ -231,7 +261,7 @@ fn every_rule_against_gradcheck() {
         ("sigmoid", 2.8e-5),
         ("sum", 2.4e-5),
         ("mean", 2.4e-5),
-        ("mean_all", 1.1e-5),
+        ("mean_all", 1.0e-5),
         ("matmul", 1.3e-5),
         ("batched matmul", 9.4e-5),
     ];
@@ -244,6 +274,18 @@ fn every_rule_against_gradcheck() {
             None => assert!(exact.contains(name) && *rel == 0.0, "{name}: {rel}"),
         }
         assert!(*ratio < 0.01, "{name}: {ratio}"); // under 1% of the tolerance
+    }
+    // The inputs keep clear of the kinks: none near 0, no two close, and the top
+    // two of each lane that `max` reduces (axis 2) far apart.
+    let xs = x.to_vec();
+    assert!(xs.iter().all(|v| v.abs() > 0.026));
+    let mut sorted = xs.clone();
+    sorted.sort_by(f32::total_cmp);
+    assert!(sorted.windows(2).all(|w| w[1] - w[0] > 0.085));
+    for lane in xs.chunks(4) {
+        let mut l = lane.to_vec();
+        l.sort_by(f32::total_cmp);
+        assert!(l[3] - l[2] > 0.58, "{lane:?}");
     }
     let largest = table.iter().map(|r| r.2).fold(0.0, f32::max);
     assert!(near(largest as f64, 0.0093, 0.01)); // batched matmul

@@ -10,7 +10,8 @@ use crate::tensor::Tensor;
 fn mean_var_lane(lane: &[f32]) -> (f32, f32) {
     let n = lane.len() as f64;
     let mean = lane.iter().map(|&x| x as f64).sum::<f64>() / n;
-    let var = lane.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+    let square = |x: f32| (x as f64 - mean) * (x as f64 - mean);
+    let var = lane.iter().map(|&x| square(x)).sum::<f64>() / n;
     (mean as f32, var as f32)
 }
 
@@ -30,12 +31,13 @@ impl<'t> Var<'t> {
     // @listing var-normalize
     /// `x_hat = (x - mean) / σ` along `dim`, with `σ = √(var + eps)` and the biased
     /// variance, as one node. Backward: `(g - mean(g) - x_hat·mean(g·x_hat)) / σ`.
+    /// `eps` must be positive: with 0, a lane of equal values gives `0 · ∞ = NaN`.
     pub fn normalize(self, dim: usize, eps: f32) -> Var<'t> {
         let x = self.value();
         let (mean, var) = x.mean_var(dim);
         let inv_std = var.add_scalar(eps).powf(-0.5); // 1/σ, one per lane
         let x_hat = x.sub(&mean).mul(&inv_std);
-        let y = x_hat.clone(); // the rule keeps x_hat and 1/σ, not x
+        let y = x_hat.clone();
         self.tape.push("normalize", y, vec![self.id], move |g| {
             let g_mean = g.mean(dim, true);
             let gx_mean = g.mul(&x_hat).mean(dim, true);

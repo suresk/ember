@@ -1,10 +1,6 @@
 //! Tests for the Chapter 13 challenges.
 #![allow(clippy::approx_constant)] // numbers printed to four places
-use ember::{
-    Rng, Tape, Tensor, Tolerance, accuracy, bce_with_logits, cross_entropy,
-    cross_entropy_masked, cross_entropy_smoothed, gradcheck, nll_loss,
-    softmax_jacobian, softmax_t,
-};
+use ember::{Rng, Tape, Tensor, Tolerance, cross_entropy, gradcheck};
 
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), shape)
@@ -15,6 +11,7 @@ fn close(x: &Tensor, want: &[f32], tol: f32) -> bool {
     x.len() == want.len() && x.iter().zip(want).all(|(a, b)| (a - b).abs() <= tol)
 }
 
+// @challenge 1
 #[test]
 fn predict_softmax_and_loss() {
     let logits = [1f32.ln(), 2f32.ln(), 3f32.ln(), 4f32.ln()];
@@ -36,6 +33,9 @@ fn predict_softmax_and_loss() {
     assert!((cross_entropy(double, &[0]).value().item() - 3.4012).abs() < 1e-4);
 }
 
+// @challenge 2
+use ember::nll_loss;
+
 #[test]
 fn nll_after_log_softmax() {
     // @listing nll-test
@@ -54,6 +54,9 @@ fn nll_after_log_softmax() {
     gradcheck(|v| nll_loss(v[0], &targets), &[logits], tol).unwrap();
     // @end
 }
+
+// @challenge 3
+use ember::cross_entropy_smoothed;
 
 #[test]
 fn label_smoothing() {
@@ -86,6 +89,9 @@ fn label_smoothing() {
     .unwrap();
 }
 
+// @challenge 4
+use ember::cross_entropy_masked;
+
 #[test]
 fn ignored_rows() {
     let tape = Tape::new();
@@ -99,11 +105,16 @@ fn ignored_rows() {
     assert!(close(&t(&grad, &[9]), &want, 5e-5));
     let none = cross_entropy_masked(z, &[None, None, None]);
     assert!(none.value().item().is_nan()); // 0 / 0, as in PyTorch
+    let g = none.backward().get(z).unwrap().to_vec(); // (1 / 0) times a zero mask
+    assert!(g.iter().all(|x| x.is_nan()));
     let logits = Tensor::randn(&[4, 3], &mut Rng::new(3));
     let targets = [Some(0), None, Some(2), Some(2)];
     let tol = Tolerance::default();
     gradcheck(|v| cross_entropy_masked(v[0], &targets), &[logits], tol).unwrap();
 }
+
+// @challenge 5
+use ember::bce_with_logits;
 
 #[test]
 fn binary_cross_entropy_with_logits() {
@@ -130,6 +141,9 @@ fn binary_cross_entropy_with_logits() {
     gradcheck(|v| bce_with_logits(v[0], &targets), &[logits], tol).unwrap();
 }
 
+// @challenge 6
+use ember::{accuracy, softmax_t};
+
 #[test]
 fn temperature() {
     let logits = t(&[1.0, 2.0, 3.0], &[3]);
@@ -153,6 +167,9 @@ fn temperature() {
     assert_eq!(accuracy(&batch.mul_scalar(2.0), &[2, 1]), 0.5);
 }
 
+// @challenge 7
+use ember::softmax_jacobian;
+
 #[test]
 fn the_jacobian_vector_product() {
     let mut rng = Rng::new(11);
@@ -169,4 +186,21 @@ fn the_jacobian_vector_product() {
     let weighted = (y * tape.constant(g)).sum_all();
     let rule = weighted.backward().get(leaf).unwrap().clone();
     assert!(close(&rule, &full.to_vec(), 1e-6));
+}
+
+// @challenge 8
+use ember::cross_entropy_lean;
+
+#[test]
+fn a_leaner_cross_entropy() {
+    let logits = Tensor::randn(&[4, 5], &mut Rng::new(7)).mul_scalar(3.0);
+    let targets = [3, 0, 4, 0];
+    let tape = Tape::new();
+    let z = tape.leaf(logits.clone());
+    let (a, b) = (cross_entropy(z, &targets), cross_entropy_lean(z, &targets));
+    assert_eq!(a.value().item(), b.value().item());
+    let (ga, gb) = (a.backward(), b.backward());
+    assert_eq!(ga.get(z).unwrap().to_vec(), gb.get(z).unwrap().to_vec()); // same bits
+    let tol = Tolerance::default();
+    gradcheck(|v| cross_entropy_lean(v[0], &targets), &[logits], tol).unwrap();
 }

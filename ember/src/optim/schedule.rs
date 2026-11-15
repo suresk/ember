@@ -73,13 +73,17 @@ impl LrScheduler for CosineLr {
 // @end
 
 impl StepLr {
+    /// Panics if `every` is 0.
     pub fn new(every: usize, gamma: f32) -> StepLr {
+        assert!(every > 0, "StepLr: a period of 0 steps");
         StepLr { every, gamma }
     }
 }
 
 impl CosineLr {
+    /// Panics if `steps` is 0 (a warmup as long as the run leaves no cosine).
     pub fn new(steps: usize, min_lr: f32) -> CosineLr {
+        assert!(steps > 0, "CosineLr: a cosine over 0 steps");
         CosineLr { steps, min_lr }
     }
 }

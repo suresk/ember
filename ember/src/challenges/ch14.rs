@@ -62,9 +62,10 @@ pub fn spirals_k(
 // @end
 
 // @listing moons
-/// Two interleaved half circles, as scikit-learn's `make_moons` draws them: class
-/// 0 on the upper half of the unit circle, class 1 on the lower half of a circle
-/// centered at (1, 0.5); each at a uniform angle, plus normal noise.
+/// Two interleaved half circles in the layout of scikit-learn's `make_moons`:
+/// class 0 on the upper half of the unit circle, class 1 on the lower half of a
+/// circle centered at (1, 0.5). The angles are random (scikit-learn spaces them
+/// evenly), and normal noise is added to both coordinates.
 pub fn moons(per_class: usize, noise: f32, rng: &mut Rng) -> Labeled {
     let (mut data, mut labels) = (Vec::new(), Vec::new());
     for class in 0..2 {
@@ -117,7 +118,7 @@ pub fn l2_step(
         fit.value().item()
     };
     for p in model.parameters() {
-        let g = p.grad.as_ref().expect("a gradient");
+        let g = p.grad.as_ref().expect("every parameter is on the tape");
         p.value = p.value.sub(&g.mul_scalar(lr));
     }
     value
@@ -156,35 +157,38 @@ pub fn fit_early(
     let save = |m: &mut dyn Module| -> Vec<Tensor> {
         m.parameters().iter().map(|p| p.value.clone()).collect()
     };
-    let mut best = (0, held_out_loss(model, held), save(model));
-    let (mut since, mut steps) = (0, 0);
-    while steps < max_steps && since < patience {
-        for _ in 0..every {
+    let (mut best_params, mut since) = (save(model), 0);
+    let mut stopped = Stopped {
+        best_step: 0,
+        best_loss: held_out_loss(model, held),
+        steps: 0,
+    };
+    while stopped.steps < max_steps && since < patience {
+        let run = every.min(max_steps - stopped.steps); // never past max_steps
+        for _ in 0..run {
             gd_step(model, &train.0, lr, |z| cross_entropy(z, &train.1));
         }
-        steps += every;
+        stopped.steps += run;
         let loss = held_out_loss(model, held);
-        if loss < best.1 {
-            (best, since) = ((steps, loss, save(model)), 0);
+        if loss < stopped.best_loss {
+            (stopped.best_step, stopped.best_loss) = (stopped.steps, loss);
+            (best_params, since) = (save(model), 0);
         } else {
             since += 1;
         }
     }
-    for (p, value) in model.parameters().into_iter().zip(best.2) {
+    for (p, value) in model.parameters().into_iter().zip(best_params) {
         p.value = value; // back to the best parameters
     }
-    Stopped {
-        best_step: best.0,
-        best_loss: best.1,
-        steps,
-    }
+    stopped
 }
 // @end
 
 // @listing lr-range
 /// The learning-rate range test: one step at each of `steps` learning rates rising
 /// geometrically from `lo` to `hi`, continuing from wherever the last step left
-/// the model. Returns (learning rate, loss before its step) pairs.
+/// the model. Returns (learning rate, loss before its step) pairs. Panics if
+/// `steps` is less than 2, since the two ends are both steps.
 pub fn lr_range(
     model: &mut dyn Module,
     x: &Tensor,
@@ -192,6 +196,10 @@ pub fn lr_range(
     (lo, hi): (f32, f32),
     steps: usize,
 ) -> Vec<(f32, f32)> {
+    assert!(
+        steps >= 2,
+        "lr_range: {steps} steps can't span {lo} to {hi}"
+    );
     (0..steps)
         .map(|k| {
             let lr = lo * math::powf(hi / lo, k as f32 / (steps - 1) as f32);

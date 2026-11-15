@@ -1,10 +1,11 @@
 //! Tests for the Chapter 3 challenges: `cargo test --test challenges_ch03`.
-use ember::{Tensor, broadcast_all, broadcast_axes, broadcast_shapes, zip_slots};
+use ember::{Tensor, broadcast_shapes};
 
 fn floats(xs: &[usize]) -> Vec<f32> {
     xs.iter().map(|&x| x as f32).collect()
 }
 
+// @challenge 1
 #[test]
 fn predict_broadcasts() {
     assert_eq!(broadcast_shapes(&[5, 1, 4], &[3, 1]), Some(vec![5, 3, 4]));
@@ -26,6 +27,9 @@ fn predict_broadcasts() {
     assert!(!e.is_contiguous());
 }
 
+// @challenge 2
+use ember::broadcast_all;
+
 #[test]
 fn broadcast_all_folds_the_rule() {
     let shapes: [&[usize]; 3] = [&[3, 1], &[4], &[2, 1, 1]];
@@ -35,6 +39,7 @@ fn broadcast_all_folds_the_rule() {
     assert_eq!(broadcast_all(&[&[3], &[1], &[2, 1], &[4, 1, 2]]), None);
 }
 
+// @challenge 3
 #[test]
 fn outer_product_by_expand() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
@@ -45,6 +50,7 @@ fn outer_product_by_expand() {
     assert_eq!(b.outer(&a).to_vec(), floats(&[10, 20, 30, 20, 40, 60]));
 }
 
+// @challenge 4
 #[test]
 fn repeat_copies_tiles() {
     let x = Tensor::arange(&[2, 3]);
@@ -72,6 +78,7 @@ fn repeat_copies_tiles() {
     );
 }
 
+// @challenge 5
 #[test]
 fn writing_into_a_broadcast_view() {
     let b = Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]);
@@ -91,11 +98,19 @@ fn writing_into_a_broadcast_view() {
     w.set(&[0, 1], 100.0);
     assert_eq!(w.to_vec(), floats(&[10, 100, 30, 10, 20, 30]));
 
+    // Sole owner: no copy, and the write still reaches both rows.
+    let mut w = Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]).expand(&[2, 3]);
+    w.set(&[0, 1], 100.0);
+    assert_eq!(w.to_vec(), floats(&[10, 100, 30, 10, 100, 30]));
+
     let mut t = Tensor::arange(&[3, 4]).transpose(0, 1);
     let before = t.clone();
     t.make_writable(); // not broadcast: no copy
     assert!(t.shares_storage(&before));
 }
+
+// @challenge 6
+use ember::broadcast_axes;
 
 #[test]
 fn broadcast_axes_lists_the_stride_zero_axes() {
@@ -115,6 +130,9 @@ fn broadcast_axes_lists_the_stride_zero_axes() {
 fn broadcast_axes_rejects_a_shape_that_does_not_expand() {
     broadcast_axes(&[2], &[2, 3]);
 }
+
+// @challenge 7
+use ember::zip_slots;
 
 #[test]
 fn zip_slots_walks_two_tensors_at_once() {

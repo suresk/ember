@@ -23,6 +23,10 @@ impl<'t> Var<'t> {
 
     /// `x` limited to `[min, max]`. The gradient passes where `min ≤ x ≤ max`,
     /// the ends included, as in PyTorch.
+    ///
+    /// # Panics
+    ///
+    /// When `min > max` or either is NaN, as `f32::clamp` does.
     pub fn clamp(self, min: f32, max: f32) -> Var<'t> {
         let f = move |x: f32| x.clamp(min, max);
         let d = move |g: f32, x: f32| if min <= x && x <= max { g } else { 0.0 };

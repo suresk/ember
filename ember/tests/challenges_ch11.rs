@@ -1,8 +1,5 @@
 //! Tests for the Chapter 11 challenges.
-use ember::{
-    Frozen, Module, NamedModule, Parameter, Residual, Tape, Tensor, Tied, Var,
-    accumulate_mse, prefixed, zero_grad_to_zeros,
-};
+use ember::{Module, Parameter, Tape, Tensor, Var};
 
 fn t(xs: &[f32], shape: &[usize]) -> Tensor {
     Tensor::from_vec(xs.to_vec(), shape)
@@ -62,6 +59,10 @@ fn zeros(k: usize, n: usize) -> Affine {
     Affine::new(Tensor::zeros(&[k, n]), Tensor::zeros(&[n]))
 }
 
+// @challenge 3
+use ember::{NamedModule, prefixed};
+
+// @challenge 1
 #[test]
 fn predict_accumulation() {
     let mut model = Affine::new(t(&[2.0, -1.0], &[2, 1]), t(&[0.5], &[1]));
@@ -84,6 +85,7 @@ fn predict_accumulation() {
     assert_eq!(grad(&model.w), [4.0, 6.0]);
 }
 
+// @challenge 2
 /// A module with a parameter its forward never reads.
 struct Spare {
     used: Affine,
@@ -101,6 +103,9 @@ impl Module for Spare {
         ps
     }
 }
+
+// @challenge 2
+use ember::zero_grad_to_zeros;
 
 #[test]
 fn zeros_or_none() {
@@ -126,6 +131,7 @@ fn zeros_or_none() {
 }
 
 // @listing named-impls
+// @challenge 3
 impl NamedModule for Affine {
     fn named_parameters(&mut self) -> Vec<(String, &mut Parameter)> {
         vec![("w".into(), &mut self.w), ("b".into(), &mut self.b)]
@@ -143,7 +149,11 @@ impl NamedModule for TwoLayers {
         named
     }
 }
+
+// @challenge 2
 // @end
+
+// @challenge 3
 
 #[test]
 fn dotted_names() {
@@ -164,6 +174,9 @@ fn dotted_names() {
     let ids: Vec<_> = model.parameters().iter().map(|p| p.id()).collect();
     assert_eq!(by_name, ids);
 }
+
+// @challenge 4
+use ember::accumulate_mse;
 
 #[test]
 fn uneven_micro_batches() {
@@ -192,6 +205,9 @@ fn uneven_micro_batches() {
     assert!(near(grad(&model.w)[0], -6.0 - 134.0 / 3.0)); // -50.67
     assert!(near(grad(&model.b)[0], -20.0));
 }
+
+// @challenge 5
+use ember::Frozen;
 
 #[test]
 fn a_frozen_module() {
@@ -234,6 +250,9 @@ fn frozen_gradients_are_still_computed() {
     assert!(frozen.0.w.grad.is_none());
 }
 
+// @challenge 6
+use ember::Residual;
+
 #[test]
 fn a_residual_block() {
     let mut block = Residual(Affine::new(t(&[0.5], &[1, 1]), t(&[1.0], &[1])));
@@ -251,6 +270,9 @@ fn a_residual_block() {
     let grads = block.forward(x).sum_all().backward();
     assert_eq!(grads.get(x).unwrap().to_vec(), [1.0, 1.0, 1.0]);
 }
+
+// @challenge 7
+use ember::Tied;
 
 #[test]
 fn tied_weights() {

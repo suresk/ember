@@ -14,6 +14,14 @@ fn transpose_example() {
 }
 
 #[test]
+fn to_vec_example() {
+    // @listing to-vec-example
+    let t = Tensor::arange(&[2, 3]).transpose(0, 1); // shape [3, 2], strides [1, 3]
+    assert_eq!(t.to_vec(), vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]); // the odometer table
+    // @end
+}
+
+#[test]
 fn permute_example() {
     // @listing permute-example
     let x = Tensor::arange(&[2, 3, 4]);
@@ -65,6 +73,14 @@ fn select_example() {
     // @end
 }
 
+// Not printed: `select` names a missing axis, like `slice`, instead of panicking on
+// `self.shape[dim]`.
+#[test]
+#[should_panic(expected = "select: axis 2 of 2")]
+fn select_rejects_a_missing_axis() {
+    Tensor::arange(&[3, 4]).select(2, 0);
+}
+
 #[test]
 fn contiguity_example() {
     // @listing contiguity-example
@@ -76,7 +92,9 @@ fn contiguity_example() {
     assert!(x.slice(0, 1, 3, 1).is_contiguous()); // whole rows
     assert!(!x.slice(1, 0, 2, 1).is_contiguous()); // part of each row
     // Shape [4, 1], strides [1, 4]: the size-1 axis is never stepped along.
-    assert!(x.transpose(0, 1).slice(1, 1, 2, 1).is_contiguous());
+    let v = x.transpose(0, 1).slice(1, 1, 2, 1);
+    assert!(v.is_contiguous());
+    assert_eq!(v.to_vec(), vec![4.0, 5.0, 6.0, 7.0]); // row 1 of x, as a column
     // @end
 }
 

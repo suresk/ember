@@ -12,10 +12,11 @@ impl Tensor {
         let (a, b) = (&self.shape, &other.shape);
         assert!(
             a.len() == 1 && a == b,
-            "dot: shapes {a:?} and {b:?} are not one vector length"
+            "dot: {a:?} and {b:?} are not vectors of the same length"
         );
-        let (x, y) = (self.to_vec(), other.to_vec());
-        x.iter().zip(&y).fold(0.0, |acc, (&p, &q)| acc + p * q)
+        let (x, y) = (self.contiguous(), other.contiguous());
+        let (x, y) = (x.as_slice().unwrap(), y.as_slice().unwrap());
+        x.iter().zip(y).fold(0.0, |acc, (&p, &q)| acc + p * q)
     }
 
     /// The sum of the main diagonal of a square matrix.
@@ -56,9 +57,9 @@ impl Tensor {
             "matmul_nt: {s:?} @ {t:?}.T"
         );
         let (a, b) = (self.contiguous(), other.contiguous());
+        let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap()); // can't fail
         let mut c = vec![0.0; s[0] * t[0]];
-        let dims = (s[0], s[1], t[0]);
-        matmul_nt_kernel(a.as_slice().unwrap(), b.as_slice().unwrap(), &mut c, dims);
+        matmul_nt_kernel(a, b, &mut c, (s[0], s[1], t[0]));
         Tensor::from_vec(c, &[s[0], t[0]])
     }
     // @end
@@ -114,6 +115,7 @@ impl Tensor {
 // @listing nt-kernel
 /// Adds `a @ bt.T` into `c`, where `a` is m × k and `bt` is n × k, both row-major.
 pub fn matmul_nt_kernel(a: &[f32], bt: &[f32], c: &mut [f32], (m, k, n): Dims) {
+    // Not check_lens: bt is n × k, not k × n.
     let (have, want) = ([a.len(), bt.len(), c.len()], [m * k, n * k, m * n]);
     assert_eq!(have, want, "matmul_nt_kernel: slices for ({m}, {k}, {n})");
     for i in 0..m {
@@ -137,6 +139,7 @@ pub fn matmul_blocked_with(
     panel: usize,
 ) {
     check_lens(a, b, c, (m, k, n));
+    assert!(panel > 0, "matmul_blocked_with: a panel of 0 rows");
     let (m4, n8) = (m - m % TILE_M, n - n % TILE_N);
     for p0 in (0..k).step_by(panel) {
         let ps = p0..k.min(p0 + panel);

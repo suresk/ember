@@ -10,6 +10,8 @@ use crate::tensor::Tensor;
 // @listing window
 /// A square window sliding over an image: `size` × `size`, moved `stride`
 /// pixels at a time, over the image framed by `padding` pixels of zeros.
+/// `Window::new` rejects a size or stride of 0; `out` rejects a stride of 0
+/// in a struct literal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
     pub size: usize,
@@ -21,7 +23,8 @@ impl Window {
     /// How many positions fit along an axis of `n` pixels: ⌊(n + 2p − k)/s⌋ + 1.
     pub fn out(&self, n: usize) -> usize {
         let padded = n + 2 * self.padding;
-        assert!(padded >= self.size, "Window: {} pixels for {self:?}", n);
+        let fits = self.stride > 0 && padded >= self.size;
+        assert!(fits, "Window: {n} pixels for {self:?}");
         (padded - self.size) / self.stride + 1
     }
     /// The input pixel that output position `o` reads at offset `i` of the
@@ -34,6 +37,8 @@ impl Window {
 // @end
 
 impl Window {
+    /// A window of `size` × `size`, `stride` apart, over `padding` pixels of
+    /// zeros; panics if `size` or `stride` is 0.
     pub fn new(size: usize, stride: usize, padding: usize) -> Window {
         assert!(
             size > 0 && stride > 0,
@@ -47,7 +52,8 @@ impl Window {
     }
 }
 
-/// The four sizes of an `[N, C, H, W]` shape.
+/// The four sizes of an `[N, C, H, W]` shape; `op` names the caller in the
+/// panic for any other rank. Crate-visible: `pool.rs` and the challenges use it.
 pub(crate) fn four(shape: &[usize], op: &str) -> [usize; 4] {
     match *shape {
         [n, c, h, w] => [n, c, h, w],
@@ -76,10 +82,10 @@ fn each_read(shape: [usize; 4], win: Window, mut f: impl FnMut(usize, usize)) {
         for channel in 0..c {
             let plane = (image * c + channel) * h * w; // where the channel starts
             for ky in 0..k {
-                let y = win.input(oy, ky, h);
+                let py = win.input(oy, ky, h); // the pixel's row, if not padding
                 for kx in 0..k {
-                    if let (Some(y), Some(x)) = (y, win.input(ox, kx, w)) {
-                        f(m, plane + y * w + x);
+                    if let (Some(py), Some(px)) = (py, win.input(ox, kx, w)) {
+                        f(m, plane + py * w + px);
                     }
                     m += 1;
                 }
@@ -96,7 +102,7 @@ impl Tensor {
     pub fn im2col(&self, win: Window) -> Tensor {
         let shape = four(self.shape(), "im2col");
         let x = self.contiguous(); // a copy only if `self` is strided
-        let x = x.as_slice().unwrap();
+        let x = x.as_slice().expect("contiguous() is contiguous");
         let [rows, cols] = win.matrix(shape);
         let mut m = vec![0.0; rows * cols]; // the padding stays 0
         each_read(shape, win, |at, from| m[at] = x[from]);
@@ -108,7 +114,7 @@ impl Tensor {
         let dims = four(shape, "col2im");
         assert_eq!(self.shape(), win.matrix(dims), "col2im: for {shape:?}");
         let m = self.contiguous();
-        let m = m.as_slice().unwrap();
+        let m = m.as_slice().expect("contiguous() is contiguous");
         let mut x = vec![0.0; shape.iter().product()];
         each_read(dims, win, |from, at| x[at] += m[from]); // overlaps add up
         Tensor::from_vec(x, shape)
@@ -127,8 +133,13 @@ impl<'t> Var<'t> {
     /// The convolution of `self`, `[N, C, H, W]`, with `weight`, `[C·k·k,
     /// C_out]`: one matrix product, read back as `[N, C_out, Ho, Wo]`.
     pub fn conv2d(self, weight: Var<'t>, win: Window) -> Var<'t> {
-        let [n, _, h, w] = four(&self.shape(), "conv2d");
-        let c_out = weight.shape()[1];
+        let [n, c, h, w] = four(&self.shape(), "conv2d");
+        let (rows_in, c_out) = (weight.shape()[0], weight.shape()[1]);
+        let fits = rows_in == c * win.size * win.size;
+        assert!(
+            fits,
+            "conv2d: {rows_in} weight rows for {c} channels, {win:?}"
+        );
         let rows = self.im2col(win).matmul(weight); // [N·Ho·Wo, C_out]
         let y = rows.reshape(&[n, win.out(h), win.out(w), c_out]);
         y.permute(&[0, 3, 1, 2]) // channels first, as a view
@@ -175,7 +186,9 @@ impl Module for Conv2d {
 impl Conv2d {
     /// A layer with the given weight, `[c_in·k·k, c_out]`, and bias, `[c_out]`.
     pub fn from_tensors(weight: Tensor, bias: Tensor, window: Window) -> Conv2d {
-        assert!(weight.ndim() == 2 && bias.shape() == [weight.shape()[1]]);
+        let fits = weight.ndim() == 2 && bias.shape() == [weight.shape()[1]];
+        let shapes = (weight.shape(), bias.shape());
+        assert!(fits, "Conv2d: weight {:?}, bias {:?}", shapes.0, shapes.1);
         let (weight, bias) = (Parameter::new(weight), Parameter::new(bias));
         Conv2d {
             weight,

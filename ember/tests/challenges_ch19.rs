@@ -1,14 +1,12 @@
 //! Tests for the Chapter 19 challenges.
-use ember::{
-    Adam, DataLoader, Dataset, Rng, Shifted, Tensor, TensorDataset, noise_scale,
-    random_split, shift, stratified_order, toy,
-};
+use ember::{Adam, DataLoader, Dataset, Rng, Tensor, TensorDataset, toy};
 use std::cell::RefCell;
 
 #[path = "../examples/spirals.rs"]
 #[allow(dead_code)]
 mod spirals;
 
+// @challenge 1
 #[test]
 fn predict_the_mnist_numbers() {
     // @listing predict-test
@@ -25,6 +23,9 @@ fn predict_the_mnist_numbers() {
     assert_eq!(47_040_000 + 16, 47_040_016); // the file's size, header included
     assert!((188_160_000.0f64 / 1048576.0 - 179.44).abs() < 0.01);
 }
+
+// @challenge 2
+use ember::random_split;
 
 #[test]
 fn a_seeded_split() {
@@ -44,6 +45,9 @@ fn a_seeded_split() {
     all.sort();
     assert_eq!(all, (0..60_000).collect::<Vec<_>>()); // disjoint, and everything
 }
+
+// @challenge 3
+use ember::{Shifted, shift};
 
 #[test]
 fn shifted_digits() {
@@ -71,6 +75,7 @@ fn shifted_digits() {
     assert_eq!(seen.len(), 25); // 5 × 5 shifts, all different on this image
 }
 
+// @challenge 4
 #[test]
 fn steps_not_epochs() {
     // @listing forever-test
@@ -87,6 +92,7 @@ fn steps_not_epochs() {
     // @end
 }
 
+// @challenge 5
 /// Batches of `size` in `order`: how many miss some class, and the fewest and
 /// most of class 0 in one batch.
 fn census(order: &[usize], labels: &[usize], size: usize) -> (usize, [usize; 2]) {
@@ -99,6 +105,9 @@ fn census(order: &[usize], labels: &[usize], size: usize) -> (usize, [usize; 2])
     }
     (missing, zeros)
 }
+
+// @challenge 5
+use ember::stratified_order;
 
 #[test]
 fn balanced_batches() {
@@ -126,6 +135,9 @@ fn balanced_batches() {
     assert!((10.0 * 0.9f64.powi(64) - 0.011790).abs() < 1e-6); // the first term
     assert!(((64.0f64 * 0.1 * 0.9).sqrt() - 2.4).abs() < 1e-9);
 }
+
+// @challenge 6
+use ember::noise_scale;
 
 #[test]
 fn the_noise_scale() {

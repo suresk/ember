@@ -18,7 +18,7 @@ impl<'t> Var<'t> {
     // @listing backward-with
     /// The backward pass from an output of any shape, starting from `seed` as the
     /// gradient with respect to `self`.
-    pub fn backward_with(self, seed: Tensor) -> Gradients {
+    pub fn backward_with(self, seed: Tensor) -> Gradients<'t> {
         let (have, want) = (seed.shape(), self.shape());
         assert_eq!(have, want, "backward_with: seed {have:?}, output {want:?}");
         self.tape.backward_from(self.id, seed)
@@ -28,7 +28,7 @@ impl<'t> Var<'t> {
     // @listing backward-leaves
     /// `backward`, keeping only the leaves' gradients: every other node's gradient
     /// is dropped as soon as it has been passed to its parents.
-    pub fn backward_leaves(self) -> Gradients {
+    pub fn backward_leaves(self) -> Gradients<'t> {
         assert_eq!(self.value().numel(), 1, "backward_leaves: not 1 element");
         let nodes = self.tape.nodes.borrow();
         let mut grads: Vec<Option<Tensor>> = vec![None; self.id + 1];
@@ -44,16 +44,21 @@ impl<'t> Var<'t> {
                 }
             }
         }
-        Gradients { grads }
+        Gradients {
+            tape: self.tape,
+            grads,
+        }
     }
     // @end
 }
 
-impl Gradients {
+impl<'t> Gradients<'t> {
     // @listing merge
     /// The gradients of the sum of two outputs of one tape: slot by slot, add the
     /// two gradients, or keep whichever one exists.
-    pub fn merge(self, other: Gradients) -> Gradients {
+    pub fn merge(self, other: Gradients<'t>) -> Gradients<'t> {
+        let same_tape = std::ptr::eq(self.tape, other.tape);
+        assert!(same_tape, "merge: Gradients of two tapes");
         let n = self.grads.len().max(other.grads.len());
         let (mut a, mut b) = (self.grads, other.grads);
         a.resize(n, None);
@@ -63,7 +68,10 @@ impl Gradients {
             (x, y) => x.or(y),
         };
         let grads = a.into_iter().zip(b).map(sum).collect();
-        Gradients { grads }
+        Gradients {
+            tape: self.tape,
+            grads,
+        }
     }
     // @end
 
@@ -79,9 +87,11 @@ impl Tape {
     /// parent per input.
     pub fn add_n<'t>(&'t self, vars: &[Var<'t>]) -> Var<'t> {
         assert!(!vars.is_empty(), "add_n: no inputs");
+        let same_tape = vars.iter().all(|v| std::ptr::eq(v.tape, self));
+        assert!(same_tape, "add_n: Vars of two tapes");
         let shape = vars[0].shape();
-        let mut sum = Tensor::zeros(&shape);
-        for v in vars {
+        let mut sum = vars[0].value();
+        for v in &vars[1..] {
             assert_eq!(v.shape(), shape, "add_n: shapes differ");
             sum = sum.add(&v.value());
         }
@@ -92,8 +102,9 @@ impl Tape {
     // @end
 
     // @listing value-bytes
-    /// The bytes of tensor data the tape keeps alive, counting each storage buffer
-    /// once however many nodes share it.
+    /// The bytes of tensor data the tape's node values keep alive, counting each
+    /// storage buffer once however many nodes share it. Tensors that only a rule
+    /// captures (none in this chapter) are not counted.
     pub fn value_bytes(&self) -> usize {
         let nodes = self.nodes.borrow();
         let mut seen = HashSet::new();

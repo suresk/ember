@@ -6,11 +6,9 @@
 //! Chapter 23 normalization, and Chapter 25 embeddings, attention and a tiny
 //! transformer.
 
-#[macro_use]
-mod composite;
-
 mod activation;
 mod attention;
+mod composite;
 mod conv;
 mod dropout;
 mod embedding;
@@ -26,6 +24,7 @@ mod transformer;
 
 pub use activation::{ReLU, Sigmoid, Tanh};
 pub use attention::{MultiHeadAttention, attention, attention_weights, causal_mask};
+pub(crate) use conv::four;
 pub use conv::{Conv2d, Window};
 pub use dropout::Dropout;
 pub use embedding::Embedding;

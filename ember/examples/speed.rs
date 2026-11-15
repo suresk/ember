@@ -1,10 +1,9 @@
-//! Chapter 24: where a training step spends its time, and what threads and
-//! reused buffers buy.
+//! Chapter 24: where a training step spends its time, and what threads buy.
 //!
 //! cargo run --release --example speed               profile MLP and CNN steps
 //! cargo run --release --example speed -- epochs     one epoch of each, timed
 //! cargo run --release --example speed -- passes     one pass over the CNN's
-//!                                                    tensors, five ways
+//!                                                    tensors, seven ways
 //! cargo run --release --example speed -- challenges the challenges, timed
 
 #[path = "mnist_cnn.rs"]
@@ -43,7 +42,8 @@ pub fn marked_step(model: &mut dyn Module, batch: &Batch, opt: &mut dyn Optimize
 }
 // @end
 
-/// `steps` steps of `model` on MNIST batches of 64, after 10 to warm up.
+// @listing profiles
+/// `steps` steps of `model`, after 10 to warm up, cycling over `batches[10..]`.
 fn profile_steps(model: &mut Sequential, batches: &[Batch], steps: usize) -> Profile {
     let mut opt = AdamW::new(1e-3);
     for batch in &batches[..10] {
@@ -57,27 +57,25 @@ fn profile_steps(model: &mut Sequential, batches: &[Batch], steps: usize) -> Pro
     profile
 }
 
-fn report(name: &str, profile: &Profile, steps: u32) {
-    println!(
-        "\n{name}, per step (averaged over {steps}):\n{}",
-        profile.per(steps)
-    );
-}
-
+/// The MLP's profile over 1,000 steps and the CNN's over 100, per step, on the
+/// first 110 MNIST batches of 64 of an epoch shuffled from seed 24.
 fn profiles(dir: &Path) -> Result<(), DataError> {
     let train = data::mnist(dir, true)?;
-    let mut rng = Rng::new(24);
-    let batches: Vec<Batch> = DataLoader::new(&train, 64)
-        .shuffle(Rng::new(24))
-        .epoch()
-        .take(110)
-        .collect();
-    let mut model = mlp(&mut rng);
-    report("MLP", &profile_steps(&mut model, &batches, 1000), 1000);
-    let mut model = cnn(&mut rng);
-    report("CNN", &profile_steps(&mut model, &batches, 100), 100);
+    let mut loader = DataLoader::new(&train, 64).shuffle(Rng::new(24));
+    let batches: Vec<Batch> = loader.epoch().take(110).collect();
+    let mut rng = Rng::new(24); // the MLP's weights, then the CNN's
+    let nets = [
+        ("MLP", mlp as fn(&mut Rng) -> Sequential, 1000),
+        ("CNN", cnn, 100),
+    ];
+    for (name, build, steps) in nets {
+        let mut model = build(&mut rng);
+        let profile = profile_steps(&mut model, &batches, steps).per(steps as u32);
+        println!("\n{name}, per step (averaged over {steps}):\n{profile}");
+    }
     Ok(())
 }
+// @end
 
 // @listing epochs
 /// One epoch of Section 20.3's `train_step` on MNIST, batches of 64, for the
@@ -113,22 +111,28 @@ fn micros(f: impl Fn() -> Tensor) -> f64 {
 
 // @listing passes
 /// Passes over the CNN's tensors: its first activation, `[64, 8, 28, 28]`,
-/// four ways, and the second convolution's im2col matrix, made and transposed.
+/// four ways, the second convolution's im2col, and both im2col matrices
+/// transposed and made contiguous, as the products' backward rules copy them.
 /// The time, and the time per number written (or read, for a sum).
 fn passes() -> Result<(), DataError> {
     set_threads(1);
     let x = Tensor::arange(&[64, 8, 28, 28]);
     let conv = Tensor::arange(&[64, 28, 28, 8]).permute(&[0, 3, 1, 2]); // a view
-    let (bias, cols) = (Tensor::arange(&[8, 1, 1]), Tensor::arange(&[12_544, 72]));
+    let bias = Tensor::arange(&[8, 1, 1]);
     let (pooled, same) = (Tensor::arange(&[64, 8, 14, 14]), Window::new(3, 1, 1));
-    let cases: [(&str, &dyn Fn() -> Tensor); 6] = [
+    let cols1 = Tensor::arange(&[50_176, 9]); // the first convolution's
+    let cols2 = Tensor::arange(&[12_544, 72]); // the second's
+    let cases: [(&str, &dyn Fn() -> Tensor); 7] = [
         ("relu, contiguous", &|| x.relu()),
         ("relu, permuted view", &|| conv.relu()),
         ("+ bias, broadcast", &|| x.add(&bias)),
         ("bias gradient, sum_to", &|| x.sum_to(&[8, 1, 1])),
         ("im2col of [64, 8, 14, 14]", &|| pooled.im2col(same)),
-        ("im2col matrix, transposed", &|| {
-            cols.transpose(0, 1).contiguous()
+        ("[50176, 9] transposed", &|| {
+            cols1.transpose(0, 1).contiguous()
+        }),
+        ("[12544, 72] transposed", &|| {
+            cols2.transpose(0, 1).contiguous()
         }),
     ];
     for (name, f) in cases {
@@ -155,6 +159,31 @@ fn challenges(dir: &Path) -> Result<(), DataError> {
     };
     let relu = |v: f32| if v < 0.0 { 0.0 } else { v };
     row("relu", &|t| micros(|| ember::par_map(&x, relu, t)));
+    let zeros = micros(|| Tensor::from_vec(vec![0.0; x.numel()], x.shape()));
+    println!("the output's zeros alone: {zeros:.0} µs");
+    let src = x.as_slice().unwrap();
+    let mut out = vec![0.0; src.len()]; // allocated once, written by every run
+    let mut into = |t: usize| {
+        let run = src.len().div_ceil(t);
+        let mut best = f64::INFINITY;
+        for _ in 0..51 {
+            let start = Instant::now();
+            std::thread::scope(|s| {
+                for (out, src) in out.chunks_mut(run).zip(src.chunks(run)) {
+                    s.spawn(move || {
+                        out.iter_mut().zip(src).for_each(|(y, &v)| *y = relu(v))
+                    });
+                }
+            });
+            best = best.min(start.elapsed().as_secs_f64() * 1e6);
+        }
+        format!("{best:.0}")
+    };
+    let times: Vec<String> = counts.iter().map(|&t| into(t)).collect();
+    println!(
+        "relu into one buffer on {counts:?} threads: {} µs",
+        times.join(", ")
+    );
     row("exp", &|t| {
         micros(|| ember::par_map(&x, ember::math::exp, t))
     });
@@ -179,7 +208,7 @@ fn challenges(dir: &Path) -> Result<(), DataError> {
         "im2col {one:.0} µs; parallel on {counts:?}: {} µs",
         times.join(", ")
     );
-    let (batch, m, k, n) = (256, 32, 16, 32);
+    let (batch, m, k, n) = (256, 15, 16, 15); // Chapter 25's scores
     let (a, b) = (
         Tensor::arange(&[batch, m, k]),
         Tensor::arange(&[batch, k, n]),
@@ -190,16 +219,17 @@ fn challenges(dir: &Path) -> Result<(), DataError> {
         .map(|&t| {
             let f = || {
                 let mut c = vec![0.0; batch * m * n];
-                ember::matmul_stacks(sa, sb, &mut c, (batch, (m, k, n)), t);
+                ember::matmul_stacks(sa, sb, &mut c, batch, (m, k, n), t);
                 Tensor::from_vec(c, &[batch, m, n])
             };
             format!("{:.0}", micros(f))
         })
         .collect();
     println!(
-        "[256, 32, 16] @ [256, 16, 32]: matmul {plain:.0} µs, stacks {} µs",
+        "[256, 15, 16] @ [256, 16, 15]: matmul {plain:.0} µs, stacks {} µs",
         times.join(", ")
     );
+    pool_times();
     set_threads(cores);
     let train = data::mnist(dir, true)?;
     for prefetch in [false, true] {
@@ -223,6 +253,41 @@ fn challenges(dir: &Path) -> Result<(), DataError> {
         );
     }
     Ok(())
+}
+
+/// Challenge 24.7: a buffer of `len` numbers, every one written, from the
+/// allocator and from a `Pool`: the fastest of 50 runs of `reps` buffers, per
+/// buffer.
+fn pool_times() {
+    let best = |reps: usize, mut f: Box<dyn FnMut() + '_>| {
+        f();
+        let time = |_| {
+            let start = Instant::now();
+            (0..reps).for_each(|_| f());
+            start.elapsed().as_secs_f64() * 1e6 / reps as f64
+        };
+        (0..50).map(time).fold(f64::INFINITY, f64::min)
+    };
+    for (len, reps) in [(4, 10_000), (8_192, 10), (100_352, 1), (4_194_304, 1)] {
+        let fresh = best(
+            reps,
+            Box::new(|| {
+                let mut buf = vec![0.0f32; len];
+                buf.iter_mut().for_each(|v| *v += 1.0);
+                drop(black_box(buf));
+            }),
+        );
+        let mut pool = ember::Pool::default();
+        let pooled = best(
+            reps,
+            Box::new(|| {
+                let mut buf = pool.take(len);
+                buf.iter_mut().for_each(|v| *v += 1.0);
+                pool.give(black_box(buf));
+            }),
+        );
+        println!("{len} numbers: new {fresh:.3} µs, from a pool {pooled:.3} µs");
+    }
 }
 
 fn main() {

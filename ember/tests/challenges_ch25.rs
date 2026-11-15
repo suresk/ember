@@ -1,8 +1,7 @@
 //! Tests for Chapter 25's challenges.
 use ember::{
-    Config, KvCache, Module, Rng, Tape, Tensor, TinyTransformer, Tolerance,
-    attention, generate_cached, gradcheck, masked_attention, padding_mask,
-    probabilities, rope, sample, sinusoidal,
+    Config, Module, Rng, Tape, Tensor, TinyTransformer, Tolerance, attention,
+    gradcheck,
 };
 
 #[path = "../examples/tiny_transformer.rs"]
@@ -38,6 +37,7 @@ fn small() -> TinyTransformer {
     model
 }
 
+// @challenge 1
 #[test]
 fn predict_parameters_and_a_running_mean() {
     // @listing predict-test
@@ -56,6 +56,9 @@ fn predict_parameters_and_a_running_mean() {
     assert!(close(&y.to_vec(), &[1.0, 1.5, 2.0, 2.5], 1e-6)); // the prefix's mean
     // @end
 }
+
+// @challenge 2
+use ember::{probabilities, sample};
 
 #[test]
 fn temperature_and_top_k() {
@@ -76,6 +79,9 @@ fn temperature_and_top_k() {
     // @end
 }
 
+// @challenge 3
+use ember::sinusoidal;
+
 #[test]
 fn sinusoidal_positions() {
     // @listing sinusoidal-test
@@ -90,6 +96,9 @@ fn sinusoidal_positions() {
     assert!((dot(3, 5) - 2.5637).abs() < 1e-4 && (dot(3, 3) - 4.0).abs() < 1e-5);
     // @end
 }
+
+// @challenge 4
+use ember::{masked_attention, padding_mask};
 
 #[test]
 fn padding_masks() {
@@ -110,14 +119,19 @@ fn padding_masks() {
     // @end
 }
 
+// @challenge 5
+use ember::{KvCache, generate_cached};
+
 #[test]
 fn a_key_value_cache() {
     // @listing cache-test
-    let model = small();
+    let mut model = small();
     for digits in [[3, 1, 2, 0], [9, 9, 0, 5], [4, 4, 4, 4]] {
-        assert_eq!(generate_cached(&model, &digits, 4), greedy(&model, &digits));
+        let cached = generate_cached(&model, &digits, 4);
+        assert_eq!(cached, greedy(&mut model, &digits));
     }
     // @end
+    assert!(!model.is_training()); // `greedy` put back the mode it found
     let (seq, tape) = ([3., 1., 2., 0., 0., 1.], Tape::new());
     let full = model.forward(tape.constant(t(&seq, &[1, 6]))).value();
     let mut cache = KvCache::default();
@@ -126,6 +140,9 @@ fn a_key_value_cache() {
         assert!(close(&one, &full.select(1, p).to_vec(), 1e-5));
     }
 }
+
+// @challenge 6
+use ember::rope;
 
 #[test]
 fn rotary_positions() {

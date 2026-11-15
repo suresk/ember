@@ -33,7 +33,7 @@ pub fn shift(
 /// pixels in `-max..=max` along each axis, drawn anew at each `get`.
 pub struct Shifted<'d, D: Dataset + ?Sized> {
     pub dataset: &'d D,
-    pub max: i32,
+    pub max: u32,
     pub fill: f32,
     pub rng: RefCell<Rng>,
 }
@@ -47,7 +47,8 @@ impl<D: Dataset + ?Sized> Dataset for Shifted<'_, D> {
         let (x, label) = self.dataset.get(i);
         let side = (x.numel() as f64).sqrt() as usize;
         let mut rng = self.rng.borrow_mut();
-        let mut draw = || rng.below(2 * self.max as usize + 1) as i32 - self.max;
+        let max = self.max as usize;
+        let mut draw = || rng.below(2 * max + 1) as i32 - max as i32;
         let by = (draw(), draw());
         let moved = shift(&x.to_vec(), side, by, self.fill);
         (Tensor::from_vec(moved, x.shape()), label)
@@ -70,7 +71,8 @@ impl<'d, D: Dataset + ?Sized> DataLoader<'d, D> {
 /// An order of the examples in which every class is spread evenly: the k-th of
 /// a class's n members (in a shuffled order) sorts at (k + u) / n, with u drawn
 /// once per class in [0, 1). A run of B examples then holds B·n/N of the class,
-/// rounded up or down.
+/// rounded up or down when the classes are equally common, and within about one
+/// of it when they are not.
 pub fn stratified_order(labels: &[usize], rng: &mut Rng) -> Vec<usize> {
     let classes = labels.iter().max().map_or(0, |&c| c + 1);
     let mut members = vec![vec![]; classes];
@@ -96,12 +98,13 @@ pub fn stratified_order(labels: &[usize], rng: &mut Rng) -> Vec<usize> {
 /// length of their mean. One backward pass per example.
 pub fn noise_scale(model: &mut dyn Module, data: &dyn Dataset) -> f64 {
     let n = data.len();
+    assert!(n > 0, "noise_scale: an empty dataset");
     let grads: Vec<Vec<f64>> = (0..n).map(|i| example_grad(model, data, i)).collect();
     let mean: Vec<f64> = (0..grads[0].len())
         .map(|k| grads.iter().map(|g| g[k]).sum::<f64>() / n as f64)
         .collect();
     let spread = |g: &Vec<f64>| -> f64 {
-        g.iter().zip(&mean).map(|(a, m)| (a - m).powi(2)).sum()
+        g.iter().zip(&mean).map(|(a, m)| (a - m) * (a - m)).sum()
     };
     let trace = grads.iter().map(spread).sum::<f64>() / n as f64;
     trace / mean.iter().map(|m| m * m).sum::<f64>()

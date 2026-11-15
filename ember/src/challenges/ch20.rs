@@ -84,8 +84,9 @@ impl BestK {
         state: &StateDict,
     ) -> Result<bool, CheckpointError> {
         let full = self.kept.len() == self.k;
-        if full && self.kept.last().is_none_or(|w| loss >= w.0) {
-            return Ok(false); // no better than the worst kept
+        let worse = full && self.kept.last().is_none_or(|w| loss >= w.0);
+        if worse || loss.is_nan() {
+            return Ok(false); // no better than the worst kept, or no loss at all
         }
         save(self.path(epoch), state)?;
         let at = self.kept.partition_point(|&(l, _)| l <= loss);

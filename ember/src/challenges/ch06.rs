@@ -32,6 +32,7 @@ impl Value {
     /// The graph in Graphviz's DOT language: one line per node, numbered in
     /// topological order, then one line per edge, from input to output.
     pub fn to_dot(&self) -> String {
+        const NEVER: &str = "writing to a String cannot fail";
         let order = self.topo_order();
         let index: HashMap<usize, usize> =
             order.iter().enumerate().map(|(i, v)| (v.id(), i)).collect();
@@ -42,11 +43,11 @@ impl Value {
                 "" => format!("{x}, grad {g}"),
                 op => format!("{op} = {x}, grad {g}"),
             };
-            writeln!(out, "  n{i} [label=\"{label}\"];").unwrap();
+            writeln!(out, "  n{i} [label=\"{label}\"];").expect(NEVER);
         }
         for (i, v) in order.iter().enumerate() {
             for (input, _) in v.local_grads() {
-                writeln!(out, "  n{} -> n{i};", index[&input.id()]).unwrap();
+                writeln!(out, "  n{} -> n{i};", index[&input.id()]).expect(NEVER);
             }
         }
         out + "}\n"
@@ -72,6 +73,10 @@ fn op_name(op: &Op) -> &'static str {
 
 // @listing neuron
 /// One neuron: `tanh(w · x + b)`, for inputs `xs` and weights `ws` of one length.
+///
+/// # Panics
+///
+/// If `xs` and `ws` differ in length.
 pub fn neuron(xs: &[Value], ws: &[Value], b: &Value) -> Value {
     let (nx, nw) = (xs.len(), ws.len());
     assert_eq!(nx, nw, "neuron: {nx} inputs, {nw} weights");
@@ -88,8 +93,10 @@ pub fn neuron(xs: &[Value], ws: &[Value], b: &Value) -> Value {
 /// differences: `(f(x + h) - f(x - h)) / 2h`, one input at a time.
 pub fn numeric_grads(f: impl Fn(&[Value]) -> Value, at: &[f32], h: f32) -> Vec<f32> {
     let eval = |i: usize, dx: f32| {
-        let xs: Vec<Value> = (0..at.len())
-            .map(|j| Value::new(if j == i { at[j] + dx } else { at[j] }))
+        let xs: Vec<Value> = at
+            .iter()
+            .enumerate()
+            .map(|(j, &x)| Value::new(if j == i { x + dx } else { x }))
             .collect();
         f(&xs).data()
     };

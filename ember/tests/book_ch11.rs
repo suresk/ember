@@ -39,8 +39,10 @@ impl Module for Affine {
 
 impl Affine {
     fn new(w: Tensor, b: Tensor) -> Affine {
-        let (w, b) = (Parameter::new(w), Parameter::new(b));
-        Affine { w, b }
+        Affine {
+            w: Parameter::new(w),
+            b: Parameter::new(b),
+        }
     }
 
     /// `k` inputs to `n` outputs, every number 0.
@@ -49,11 +51,13 @@ impl Affine {
     }
 }
 
+// @listing line
 /// The section's model, `w = 0`, `b = 0`, and its data: two points on `y = 2x + 1`.
 fn line() -> (Affine, Tensor, Tensor) {
     let model = Affine::new(t(&[0.0], &[1, 1]), t(&[0.0], &[1]));
     (model, t(&[1.0, 2.0], &[2, 1]), t(&[3.0, 5.0], &[2, 1]))
 }
+// @end
 
 // @listing mse
 /// The mean squared error, `mean((pred - y)²)`.
@@ -65,7 +69,7 @@ fn mse<'t>(pred: Var<'t>, y: Var<'t>) -> Var<'t> {
 // @listing step
 /// The loss on `(x, y)`, with its gradients added into the parameters' `grad`.
 fn loss_and_grads(model: &mut impl Module, x: &Tensor, y: &Tensor) -> f32 {
-    let tape = Tape::new(); // one tape per step (Section 7.7)
+    let tape = Tape::new(); // one tape per step
     let pred = model.forward(tape.constant(x.clone()));
     let loss = mse(pred, tape.constant(y.clone()));
     loss.backward_into(&mut model.parameters());
@@ -91,10 +95,11 @@ fn ids_are_unique() {
     assert_ne!(a.id(), b.id()); // same value, different parameters
     assert!(a.id() < b.id()); // on one thread, numbered in order
     let made = || Parameter::new(Tensor::zeros(&[1])).id();
-    let mut ids: Vec<ParamId> = (0..4)
-        .map(|_| thread::spawn(made).join().unwrap()) // one parameter per thread
-        .collect();
-    ids.dedup();
+    let threads: Vec<_> = (0..4).map(|_| thread::spawn(made)).collect(); // all running
+    let mut ids: Vec<ParamId> =
+        threads.into_iter().map(|h| h.join().unwrap()).collect();
+    ids.sort();
+    ids.dedup(); // dedup removes only neighbors, hence the sort
     assert_eq!(ids.len(), 4); // four different ids
     // @end
 }
@@ -229,9 +234,10 @@ fn four_steps_of_gradient_descent() {
         sgd(&mut model, 0.1);
     }
     let want = [17.0, 1.685, 0.16925, 0.019169];
-    assert!(losses.iter().zip(want).all(|(&l, w)| near(l, w)));
+    let close = losses.iter().zip(want).all(|(&l, w)| near(l, w));
+    assert!(close, "{losses:?}");
     let (w, b) = (model.w.value.item(), model.b.value.item());
-    assert!(near(w, 1.8819) && near(b, 1.1496)); // heading for 2 and 1
+    assert!(near(w, 1.8819) && near(b, 1.1496)); // w heading for 2, b past 1
     // @end
     assert!(near(loss_and_grads(&mut model, &x, &y), 0.0042459));
 }
@@ -273,6 +279,56 @@ fn forgetting_zero_grad() {
     // @end
 }
 
+#[test]
+fn b_overshoots_and_the_loss_slows() {
+    // Section 11.6: after three fast steps, b climbs past 1 to a peak after six
+    // steps, and from the seventh step on each one removes about 3% of the loss.
+    let (mut model, x, y) = line();
+    let (mut losses, mut bs) = (vec![], vec![]);
+    for _ in 0..10 {
+        model.zero_grad();
+        losses.push(loss_and_grads(&mut model, &x, &y));
+        sgd(&mut model, 0.1);
+        bs.push(model.b.value.item());
+    }
+    let peak = bs.iter().copied().fold(f32::MIN, f32::max);
+    assert!(near(peak, 1.155267) && bs[5] == peak, "{bs:?}");
+    for pair in losses[6..].windows(2) {
+        let kept = pair[1] / pair[0];
+        assert!((0.96..0.98).contains(&kept), "{losses:?}");
+    }
+    assert!(near(losses[9], 0.0022579), "{losses:?}");
+}
+
+#[test]
+#[should_panic(expected = "add_grad")]
+fn a_gradient_must_match_its_parameter() {
+    // @listing reshaped
+    let mut p = Parameter::new(Tensor::zeros(&[3]));
+    let tape = Tape::new();
+    let v = tape.param(&p);
+    p.value = Tensor::zeros(&[2, 3]); // replaced while its node is on the tape
+    v.sum_all().backward_into(&mut [&mut p]); // a [3] gradient for a [2, 3]
+    // @end
+}
+
+#[test]
+fn a_network_at_zero_moves_only_its_last_bias() {
+    // Section 11.9: with every number 0, tanh(0) = 0 and out.w = 0 stop every
+    // gradient except out.b's.
+    let mut model = TwoLayers::zeros(2, 3, 1);
+    let tape = Tape::new();
+    let x = tape.constant(t(&[1.0, 2.0, -1.0, 0.5], &[2, 2]));
+    model
+        .forward(x)
+        .sum_all()
+        .backward_into(&mut model.parameters());
+    for p in [&model.hidden.w, &model.hidden.b, &model.out.w] {
+        assert!(grad(p).iter().all(|&g| g == 0.0));
+    }
+    assert_eq!(grad(&model.out.b), [2.0]); // one per row
+}
+
 // @listing two-layers
 /// Two affine maps with a `tanh` between them.
 struct TwoLayers {
@@ -295,8 +351,10 @@ impl Module for TwoLayers {
 
 impl TwoLayers {
     fn zeros(k: usize, h: usize, n: usize) -> TwoLayers {
-        let (hidden, out) = (Affine::zeros(k, h), Affine::zeros(h, n));
-        TwoLayers { hidden, out }
+        TwoLayers {
+            hidden: Affine::zeros(k, h),
+            out: Affine::zeros(h, n),
+        }
     }
 }
 
@@ -315,9 +373,10 @@ fn modules_of_modules() {
     let x = tape.constant(t(&[1.0, 2.0, -1.0, 0.5], &[2, 2]));
     let loss = model.forward(x).sum_all();
     loss.backward_into(&mut model.parameters());
-    let shape = |p: &&mut Parameter| p.grad.as_ref().unwrap().shape().to_vec();
-    let shapes: Vec<Vec<usize>> = model.parameters().iter().map(shape).collect();
-    assert_eq!(shapes, [vec![2, 3], vec![3], vec![3, 1], vec![1]]);
+    let want: [&[usize]; 4] = [&[2, 3], &[3], &[3, 1], &[1]];
+    for (p, shape) in model.parameters().into_iter().zip(want) {
+        assert_eq!(p.grad.as_ref().expect("a gradient").shape(), shape);
+    }
     assert_eq!(count(&mut model), 13); // 2·3 + 3 + 3·1 + 1
     model.zero_grad(); // the default method, through both children
     assert!(model.parameters().iter().all(|p| p.grad.is_none()));

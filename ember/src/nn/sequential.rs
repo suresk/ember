@@ -24,6 +24,7 @@ impl Module for Sequential {
         let layers = self.layers.iter_mut(); // one `&mut Box` at a time
         layers.flat_map(|m| m.parameters()).collect()
     }
+    // @hide
     fn named_parameters(&mut self) -> Vec<(String, &mut Parameter)> {
         let mut named = vec![]; // Chapter 20: "0.weight", "0.bias", "2.weight", …
         for (i, layer) in self.layers.iter_mut().enumerate() {
@@ -35,6 +36,9 @@ impl Module for Sequential {
     fn train(&mut self, on: bool) {
         self.layers.iter_mut().for_each(|layer| layer.train(on)); // Chapter 21
     }
+    fn is_training(&self) -> bool {
+        self.layers.iter().all(|layer| layer.is_training()) // Chapter 21
+    }
     fn named_buffers(&mut self) -> Vec<(String, &mut Tensor)> {
         let mut named = vec![]; // Chapter 23: "1.running_mean", …
         for (i, layer) in self.layers.iter_mut().enumerate() {
@@ -43,5 +47,6 @@ impl Module for Sequential {
         }
         named
     }
+    // @show
 }
 // @end

@@ -17,6 +17,17 @@ pub struct RmsPropState {
     /// The running mean of the squared gradients, v, one per number.
     pub square_avg: Tensor,
 }
+
+impl RmsPropState {
+    /// Step 0, with v zero in the parameter's shape.
+    pub fn new(shape: &[usize]) -> RmsPropState {
+        let square_avg = Tensor::zeros(shape);
+        RmsPropState {
+            step: 0,
+            square_avg,
+        }
+    }
+}
 // @end
 
 // @listing rmsprop
@@ -88,12 +99,9 @@ impl Optimizer for RmsProp {
             let group = ParamGroup::find(&self.groups, p.id());
             let (lr, wd) = (group.lr, group.weight_decay);
             let g = g.as_slice().expect("RmsProp: a contiguous gradient");
-            let zeros = || Tensor::zeros(p.value.shape());
-            let state = self.state.entry(p.id()).or_insert_with(|| RmsPropState {
-                step: 0,
-                square_avg: zeros(),
-            });
-            state.step += 1;
+            let new = || RmsPropState::new(p.value.shape());
+            let state = self.state.entry(p.id()).or_insert_with(new);
+            state.step += 1; // read by Chapter 20's state_dict, not here
             update_each(&mut p.value, g, [&mut state.square_avg], |w, g, [v]| {
                 let g = g + wd * *w;
                 *v = alpha * *v + (1.0 - alpha) * g * g;
